@@ -1,0 +1,5 @@
+{
+  "baseUrl": "http://localhost:8080/dcm4chee-arc/aets/DCM4CHEE/rs",
+  "description": "Configuración por defecto para dcm4chee Archive 5.x",
+  "notes": "Modifique la URL base según la configuración de su servidor dcm4chee"
+}
