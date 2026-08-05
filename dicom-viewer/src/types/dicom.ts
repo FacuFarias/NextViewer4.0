@@ -38,6 +38,12 @@ export interface DicomInstance {
   rescaleSlope?: number;
   photometricInterpretation: string;
   samplesPerPixel?: number;
+  pixelSpacing?: number[];
+  imagePositionPatient?: number[];
+  imageOrientationPatient?: number[];
+  frameOfReferenceUID?: string;
+  modality?: string;
+  seriesNumber?: number;
 }
 
 export interface DicomWebConfig {

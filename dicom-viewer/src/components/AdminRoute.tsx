@@ -1,12 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
-import { isAdmin, getCurrentToken, getAccessToken } from '../services/auth';
+import { DICOM_PASSWORD, DICOM_USERNAME, isAdmin, getCurrentToken, getAccessToken } from '../services/auth';
+import { useTranslation } from '../i18n';
 
 interface AdminRouteProps {
   children: React.ReactNode;
 }
 
 const AdminRoute: React.FC<AdminRouteProps> = ({ children }) => {
+  const { t } = useTranslation();
   const [isChecking, setIsChecking] = useState(true);
   const [isAuthorized, setIsAuthorized] = useState(false);
   const location = useLocation();
@@ -18,7 +20,7 @@ const AdminRoute: React.FC<AdminRouteProps> = ({ children }) => {
         
         if (!token) {
           try {
-            token = await getAccessToken('admin', 'Sih.123');
+            token = await getAccessToken(DICOM_USERNAME, DICOM_PASSWORD);
           } catch {
             setIsAuthorized(false);
             setIsChecking(false);
@@ -46,7 +48,7 @@ const AdminRoute: React.FC<AdminRouteProps> = ({ children }) => {
     return (
       <div className="admin-loading">
         <div className="loading-spinner"></div>
-        <p>Verificando permisos...</p>
+        <p>{t('admin.checkingPermissions')}</p>
       </div>
     );
   }

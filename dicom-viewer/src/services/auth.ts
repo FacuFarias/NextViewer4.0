@@ -1,5 +1,10 @@
 const KEYCLOAK_URL = '/auth/realms/dcm4che/protocol/openid-connect/token';
-const CLIENT_ID = 'dicom-viewer';
+const CLIENT_ID = 'dcm4chee-arc-ui';
+
+// Keep the service credentials in one place. These are the credentials used
+// by the current local dcm4chee/Keycloak deployment.
+export const DICOM_USERNAME = 'admin';
+export const DICOM_PASSWORD = 'changeit';
 
 interface TokenResponse {
   access_token: string;
@@ -90,9 +95,20 @@ async function refreshAccessToken(): Promise<string> {
 }
 
 export function clearToken(): void {
+  const previousCacheUserKey = getCacheUserKey();
   currentToken = null;
   refreshToken = null;
   tokenExpiry = 0;
+
+  // Logout is currently owned by the host application. Keep the cleanup here
+  // so any caller that clears the session also removes the local DICOM data
+  // belonging to the previous user.
+  void import('./dicomCache')
+    .then(({ clearPersistentDicomCacheForUser }) => clearPersistentDicomCacheForUser(previousCacheUserKey))
+    .catch(error => console.warn('[DICOM cache] Failed to clear user cache', error));
+  void import('./preloadQueue')
+    .then(({ clearPreloadQueue }) => clearPreloadQueue(previousCacheUserKey))
+    .catch(error => console.warn('[Preload] Failed to clear user queue', error));
 }
 
 export function decodeToken(token: string): any {
@@ -114,6 +130,24 @@ export function decodeToken(token: string): any {
 
 export function getCurrentToken(): string | null {
   return currentToken;
+}
+
+/**
+ * Returns a stable, non-sensitive identifier that can be used to namespace
+ * browser-side DICOM caches. The token itself is never persisted in the cache
+ * key or in IndexedDB.
+ */
+export function getCacheUserKey(): string {
+  const decoded = currentToken ? decodeToken(currentToken) : null;
+  const identity = String(decoded?.sub || decoded?.preferred_username || 'anonymous');
+
+  let hash = 2166136261;
+  for (let index = 0; index < identity.length; index += 1) {
+    hash ^= identity.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+
+  return (hash >>> 0).toString(16);
 }
 
 export function isAdmin(): boolean {

@@ -1,5 +1,8 @@
 import React from 'react';
 import { DicomStudy, DicomSeries } from '../types/dicom';
+import type { SeriesPreloadProgress } from '../hooks/useDicomViewer';
+import type { PreloadQueueState, SeriesPreloadItem } from '../services/preloadQueue';
+import { useTranslation } from '../i18n';
 
 interface SeriesPanelProps {
   study: DicomStudy;
@@ -7,6 +10,8 @@ interface SeriesPanelProps {
   onSeriesSelect: (series: DicomSeries) => void;
   onBackToStudies: () => void;
   thumbnails: Record<string, string>;
+  preloadProgress: Record<string, SeriesPreloadProgress>;
+  preloadQueue: PreloadQueueState;
 }
 
 const SeriesPanel: React.FC<SeriesPanelProps> = ({
@@ -15,7 +20,10 @@ const SeriesPanel: React.FC<SeriesPanelProps> = ({
   onSeriesSelect,
   onBackToStudies,
   thumbnails,
+  preloadProgress,
+  preloadQueue,
 }) => {
+  const { t } = useTranslation();
   const getModalityIcon = (modality: string): string => {
     const icons: Record<string, string> = {
       CT: '🖥',
@@ -36,37 +44,37 @@ const SeriesPanel: React.FC<SeriesPanelProps> = ({
     <div className="series-panel">
       <div className="series-panel-header">
         <button className="back-btn" onClick={onBackToStudies}>
-          ← Estudios
+          {t('series.back')}
         </button>
       </div>
 
       <div className="patient-info-section">
         <div className="patient-info-row">
-          <span className="info-label">Paciente:</span>
-          <span className="info-value">{study.patientName || 'Sin nombre'}</span>
+          <span className="info-label">{t('series.patient')}</span>
+          <span className="info-value">{study.patientName || t('common.noName')}</span>
         </div>
         <div className="patient-info-row">
-          <span className="info-label">ID:</span>
+          <span className="info-label">{t('series.id')}</span>
           <span className="info-value">{study.patientID}</span>
         </div>
         <div className="patient-info-row">
-          <span className="info-label">Fecha:</span>
+          <span className="info-label">{t('series.date')}</span>
           <span className="info-value">{study.studyDate}</span>
         </div>
         <div className="patient-info-row">
-          <span className="info-label">Modalidad:</span>
+          <span className="info-label">{t('series.modality')}</span>
           <span className="info-value">{study.modality}</span>
         </div>
         {study.studyDescription && (
           <div className="patient-info-row">
-            <span className="info-label">Descripción:</span>
+            <span className="info-label">{t('series.description')}</span>
             <span className="info-value">{study.studyDescription}</span>
           </div>
         )}
       </div>
 
       <div className="series-selector-section">
-        <h4>Series ({study.series.length})</h4>
+        <h4>{t('series.title', { count: study.series.length })}</h4>
         <div className="series-list">
           {study.series.map((series, index) => (
             <div
@@ -78,7 +86,7 @@ const SeriesPanel: React.FC<SeriesPanelProps> = ({
                 {thumbnails[series.seriesInstanceUID] ? (
                   <img
                     src={thumbnails[series.seriesInstanceUID]}
-                    alt={`Serie ${series.seriesNumber || index + 1}`}
+                    alt={t('series.alt', { number: series.seriesNumber || index + 1 })}
                     className="series-thumbnail"
                     loading="lazy"
                   />
@@ -90,17 +98,59 @@ const SeriesPanel: React.FC<SeriesPanelProps> = ({
               </div>
               <div className="series-item-info">
                 <div className="series-item-header">
-                  <span className="series-number">Serie {series.seriesNumber || index + 1}</span>
+                  <span className="series-number">{t('series.label', { number: series.seriesNumber || index + 1 })}</span>
                   <span className="series-modality">{series.modality}</span>
                 </div>
                 <div className="series-item-body">
                   <span className="series-description">
-                    {series.seriesDescription || 'Sin descripción'}
+                    {series.seriesDescription || t('common.noDescription')}
                   </span>
                   <span className="series-count">
-                    {series.instances?.length || series.numberOfInstances || 0} img
+                    {t('series.imagesShort', { count: series.instances?.length || series.numberOfInstances || 0 })}
                   </span>
                 </div>
+                {(() => {
+                  const queuedStudy = preloadQueue.items[study.studyInstanceUID];
+                  const persistentProgress: SeriesPreloadItem | undefined = queuedStudy?.series?.[series.seriesInstanceUID] ||
+                    (queuedStudy?.status === 'complete' && !queuedStudy.series
+                      ? {
+                        status: 'complete',
+                        completed: series.numberOfInstances || series.instances?.length || 0,
+                        total: series.numberOfInstances || series.instances?.length || 0,
+                        failed: 0,
+                      }
+                      : undefined);
+                  const runtimeProgress = preloadProgress[series.seriesInstanceUID];
+                  const progress = persistentProgress || runtimeProgress;
+                  if (!progress) return null;
+                  const loaded = 'completed' in progress ? progress.completed : progress.loaded;
+                  const percentage = Math.round(
+                    (loaded / Math.max(1, progress.total)) * 100
+                  );
+                  const statusLabel = 'status' in progress
+                    ? progress.status === 'complete'
+                      ? t('series.cached')
+                      : progress.status === 'error'
+                        ? t('series.error')
+                        : progress.status === 'queued'
+                          ? t('studies.queued')
+                          : t('studies.downloading', { completed: loaded, total: progress.total })
+                    : progress.done ? t('series.cached') : t('series.preparing');
+                  return (
+                    <div
+                      className="series-cache-progress"
+                      title={t('series.titleProgress', { loaded, total: progress.total })}
+                    >
+                      <div className="series-cache-progress-label">
+                        <span>{statusLabel}</span>
+                        <span>{percentage}%</span>
+                      </div>
+                      <div className="series-cache-progress-track" role="progressbar" aria-valuenow={percentage} aria-valuemin={0} aria-valuemax={100}>
+                        <div className="series-cache-progress-bar" style={{ width: `${percentage}%` }} />
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           ))}

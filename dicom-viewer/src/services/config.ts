@@ -1,13 +1,21 @@
-import { ViewerConfig, DEFAULT_CONFIG } from '../types/config';
+import { ViewerConfig, DEFAULT_CONFIG, FeatureKey, Language } from '../types/config';
 
 const CONFIG_KEY = 'dicom-viewer-config';
+
+function isLanguage(value: unknown): value is Language {
+  return value === 'en' || value === 'es';
+}
 
 export function getConfig(): ViewerConfig {
   try {
     const stored = localStorage.getItem(CONFIG_KEY);
     if (stored) {
       const parsed = JSON.parse(stored);
-      return { ...DEFAULT_CONFIG, ...parsed };
+      return {
+        ...DEFAULT_CONFIG,
+        ...parsed,
+        language: isLanguage(parsed?.language) ? parsed.language : DEFAULT_CONFIG.language,
+      };
     }
   } catch (error) {
     console.error('Failed to load config:', error);
@@ -37,7 +45,7 @@ export function resetConfig(): ViewerConfig {
   return { ...DEFAULT_CONFIG };
 }
 
-export function isFeatureEnabled(feature: keyof ViewerConfig): boolean {
+export function isFeatureEnabled(feature: FeatureKey): boolean {
   const config = getConfig();
   return config[feature];
 }

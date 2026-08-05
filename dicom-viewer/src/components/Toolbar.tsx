@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { WindowLevel } from '../types/dicom';
 import { getConfig } from '../services/config';
+import { useTranslation } from '../i18n';
 import {
   IconWindowLevel,
   IconLength,
@@ -41,14 +42,29 @@ const WINDOW_PRESETS: WindowPreset[] = [
   { name: 'Genérico', width: 4096, center: 2048, modalities: [] },
 ];
 
+const WINDOW_PRESET_TRANSLATION_KEYS: Record<string, string> = {
+  Abdomen: 'toolbar.preset.abdomen',
+  Hueso: 'toolbar.preset.bone',
+  Pulmón: 'toolbar.preset.lung',
+  Cerebro: 'toolbar.preset.brain',
+  Subdural: 'toolbar.preset.subdural',
+  Hematoma: 'toolbar.preset.hematoma',
+  'Tejido blando': 'toolbar.preset.softTissue',
+  'Rodilla MR': 'toolbar.preset.kneeMr',
+  'Cerebro MR': 'toolbar.preset.brainMr',
+  'Tórax RX': 'toolbar.preset.chestXray',
+  Mamografía: 'toolbar.preset.mammography',
+  Genérico: 'toolbar.preset.generic',
+};
+
 export const ANNOTATION_TOOLS = [
-  { name: 'WindowLevel', Icon: IconWindowLevel, title: 'Window/Level' },
-  { name: 'Length', Icon: IconLength, title: 'Medir distancia' },
-  { name: 'Arrow', Icon: IconArrow, title: 'Flecha' },
-  { name: 'Circle', Icon: IconCircle, title: 'ROI circular' },
-  { name: 'Angle', Icon: IconAngle, title: 'Ángulo' },
-  { name: 'Bidirectional', Icon: IconBidirectional, title: 'Bidireccional' },
-  { name: 'Rectangle', Icon: IconRectangle, title: 'Rectángulo' },
+  { name: 'WindowLevel', Icon: IconWindowLevel, titleKey: 'toolbar.windowLevel' },
+  { name: 'Length', Icon: IconLength, titleKey: 'toolbar.measureDistance' },
+  { name: 'ArrowAnnotate', Icon: IconArrow, titleKey: 'toolbar.arrow' },
+  { name: 'CircleROI', Icon: IconCircle, titleKey: 'toolbar.circularRoi' },
+  { name: 'Angle', Icon: IconAngle, titleKey: 'toolbar.angle' },
+  { name: 'Bidirectional', Icon: IconBidirectional, titleKey: 'toolbar.bidirectional' },
+  { name: 'Rectangle', Icon: IconRectangle, titleKey: 'toolbar.rectangle' },
 ];
 
 export const AnnotationToolbar: React.FC<{
@@ -57,16 +73,17 @@ export const AnnotationToolbar: React.FC<{
   onResetView?: () => void;
   onInvertColors?: () => void;
 }> = ({ activeTool = 'WindowLevel', onToolChange, onResetView, onInvertColors }) => {
+  const { t } = useTranslation();
   const config = getConfig();
 
   return (
     <div className="annotation-toolbar">
-      {config.annotationsEnabled && ANNOTATION_TOOLS.map(({ name, Icon, title }) => (
+      {config.annotationsEnabled && ANNOTATION_TOOLS.map(({ name, Icon, titleKey }) => (
         <button
           key={name}
           className={`annotation-icon-btn ${activeTool === name ? 'active' : ''}`}
           onClick={() => onToolChange?.(name)}
-          title={title}
+          title={t(titleKey)}
         >
           <Icon className="annotation-icon" />
         </button>
@@ -77,7 +94,7 @@ export const AnnotationToolbar: React.FC<{
       <button
         className="annotation-icon-btn"
         onClick={onResetView}
-        title="Restablecer vista"
+        title={t('toolbar.resetView')}
       >
         <IconReset className="annotation-icon" />
       </button>
@@ -85,7 +102,7 @@ export const AnnotationToolbar: React.FC<{
       <button
         className="annotation-icon-btn"
         onClick={onInvertColors}
-        title="Invertir colores"
+        title={t('toolbar.invertColors')}
       >
         <IconInvert className="annotation-icon" />
       </button>
@@ -98,6 +115,7 @@ const Toolbar: React.FC<ToolbarProps> = ({
   onWindowLevelChange,
   modality,
 }) => {
+  const { t } = useTranslation();
   const [showPresets, setShowPresets] = useState(false);
   const config = getConfig();
 
@@ -118,7 +136,7 @@ const Toolbar: React.FC<ToolbarProps> = ({
   return (
     <div className="toolbar">
       <div className="toolbar-section">
-        <h4>Window/Level</h4>
+        <h4>{t('toolbar.windowLevel')}</h4>
         <div className="wl-controls">
           <div className="wl-control">
             <label>
@@ -168,7 +186,7 @@ const Toolbar: React.FC<ToolbarProps> = ({
       {config.windowLevelPresetsEnabled && (
         <div className="toolbar-section">
           <div className="presets-header">
-            <h4>Presets</h4>
+            <h4>{t('toolbar.presets')}</h4>
             <button 
               className="toggle-presets"
               onClick={() => setShowPresets(!showPresets)}
@@ -183,9 +201,9 @@ const Toolbar: React.FC<ToolbarProps> = ({
                   key={preset.name}
                   className={`preset-btn ${windowLevel.windowWidth === preset.width && windowLevel.windowCenter === preset.center ? 'active' : ''}`}
                   onClick={() => onWindowLevelChange(preset.width, preset.center)}
-                  title={`W: ${preset.width} L: ${preset.center}`}
+                  title={t('toolbar.windowTitle', { width: preset.width, center: preset.center })}
                 >
-                  {preset.name}
+                  {t(WINDOW_PRESET_TRANSLATION_KEYS[preset.name] || 'toolbar.preset.generic')}
                 </button>
               ))}
             </div>

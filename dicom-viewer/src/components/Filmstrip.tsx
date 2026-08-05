@@ -1,5 +1,6 @@
 import React, { useRef, useEffect } from 'react';
 import { DicomInstance } from '../types/dicom';
+import { useTranslation } from '../i18n';
 
 interface FilmstripProps {
   instances: DicomInstance[];
@@ -10,6 +11,7 @@ const Filmstrip: React.FC<FilmstripProps> = ({
   instances,
   currentIndex,
 }) => {
+  const { t } = useTranslation();
   const listRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef<HTMLDivElement>(null);
 
@@ -41,7 +43,7 @@ const Filmstrip: React.FC<FilmstripProps> = ({
             key={instance.sopInstanceUID}
             ref={index === currentIndex ? activeRef : null}
             className={`filmstrip-item ${index === currentIndex ? 'active' : ''}`}
-            title={`Instancia ${instance.instanceNumber || index + 1}`}
+            title={`${t('common.instance')} ${instance.instanceNumber || index + 1}`}
           >
             <div className="filmstrip-item-number">
               {instance.instanceNumber || index + 1}

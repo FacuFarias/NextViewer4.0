@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { DicomStudy, DicomSeries } from '../types/dicom';
 import { downloadSeriesAsZip } from '../services/download';
+import { useTranslation } from '../i18n';
 
 interface DownloadButtonProps {
   study: DicomStudy;
@@ -8,6 +9,7 @@ interface DownloadButtonProps {
 }
 
 const DownloadButton: React.FC<DownloadButtonProps> = ({ study, currentSeries }) => {
+  const { t } = useTranslation();
   const [isDownloading, setIsDownloading] = useState(false);
   const [progress, setProgress] = useState({ current: 0, total: 0 });
 
@@ -27,7 +29,7 @@ const DownloadButton: React.FC<DownloadButtonProps> = ({ study, currentSeries })
       );
     } catch (error) {
       console.error('Download failed:', error);
-      alert('Error al descargar la serie');
+      alert(t('download.errorSeries'));
     } finally {
       setIsDownloading(false);
       setProgress({ current: 0, total: 0 });
@@ -40,7 +42,7 @@ const DownloadButton: React.FC<DownloadButtonProps> = ({ study, currentSeries })
     try {
       const JSZip = (await import('jszip')).default;
       const { saveAs } = await import('file-saver');
-      const { getAccessToken } = await import('../services/auth');
+      const { DICOM_PASSWORD, DICOM_USERNAME, getAccessToken } = await import('../services/auth');
       const { dicomWebService } = await import('../services/dicomWeb');
 
       const seriesWithInstances: Array<{ series: DicomSeries; instances: any[] }> = [];
@@ -70,7 +72,7 @@ const DownloadButton: React.FC<DownloadButtonProps> = ({ study, currentSeries })
 
         for (const instance of instances) {
           try {
-            const token = await getAccessToken('admin', 'Sih.123');
+            const token = await getAccessToken(DICOM_USERNAME, DICOM_PASSWORD);
             const wadoUrl = dicomWebService.getInstanceWadoUriUrl(
               study.studyInstanceUID,
               series.seriesInstanceUID,
@@ -104,7 +106,7 @@ const DownloadButton: React.FC<DownloadButtonProps> = ({ study, currentSeries })
       saveAs(content, `${safeName}_${study.studyInstanceUID}.zip`);
     } catch (error) {
       console.error('Download failed:', error);
-      alert('Error al descargar el estudio');
+      alert(t('download.errorStudy'));
     } finally {
       setIsDownloading(false);
       setProgress({ current: 0, total: 0 });
@@ -113,7 +115,7 @@ const DownloadButton: React.FC<DownloadButtonProps> = ({ study, currentSeries })
 
   return (
     <div className="download-section">
-      <h4>Descargar</h4>
+      <h4>{t('download.title')}</h4>
       
       {currentSeries && (
         <button
@@ -124,11 +126,11 @@ const DownloadButton: React.FC<DownloadButtonProps> = ({ study, currentSeries })
           {isDownloading ? (
             <>
               <span className="download-spinner"></span>
-              Descargando... {progress.current}/{progress.total}
+              {t('download.downloading', { current: progress.current, total: progress.total })}
             </>
           ) : (
             <>
-              📥 Serie actual ({currentSeries.instances.length} imgs)
+              {t('download.currentSeries', { count: currentSeries.instances.length })}
             </>
           )}
         </button>
@@ -142,11 +144,11 @@ const DownloadButton: React.FC<DownloadButtonProps> = ({ study, currentSeries })
         {isDownloading ? (
           <>
             <span className="download-spinner"></span>
-            Descargando... {progress.current}/{progress.total}
+            {t('download.downloading', { current: progress.current, total: progress.total })}
           </>
         ) : (
           <>
-            📦 Todo el estudio
+            {t('download.allStudy')}
           </>
         )}
       </button>

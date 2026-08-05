@@ -163,10 +163,12 @@ const StudyBrowser: React.FC<StudyBrowserProps> = ({
                   onClick={() => onStudySelect(study)}
                 >
                   <td className="patient-name-cell">
-                    <span className="patient-name">{study.patientName || 'Sin nombre'}</span>
-                    {study.patientSex && (
-                      <span className="patient-sex">{study.patientSex}</span>
-                    )}
+                    <div className="patient-name-content">
+                      <span className="patient-name">{study.patientName || 'Sin nombre'}</span>
+                      {study.patientSex && (
+                        <span className="patient-sex">{study.patientSex}</span>
+                      )}
+                    </div>
                   </td>
                   <td className="patient-id-cell">{study.patientID}</td>
                   <td className="date-cell">{formatDate(study.studyDate)}</td>

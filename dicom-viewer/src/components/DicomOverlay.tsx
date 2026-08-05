@@ -1,5 +1,6 @@
 import React from 'react';
 import { DicomStudy, DicomInstance } from '../types/dicom';
+import { useTranslation } from '../i18n';
 
 interface DicomOverlayProps {
   study: DicomStudy | null;
@@ -21,28 +22,29 @@ const DicomOverlay: React.FC<DicomOverlayProps> = ({
   totalImages,
   windowLevel,
 }) => {
+  const { t } = useTranslation();
   if (!study) return null;
 
   return (
     <div className="dicom-overlay">
       <div className="overlay-top-left">
         <div className="overlay-row">
-          <span className="overlay-label">Paciente:</span>
-          <span className="overlay-value">{study.patientName || 'N/A'}</span>
+          <span className="overlay-label">{t('overlay.patient')}</span>
+          <span className="overlay-value">{study.patientName || t('overlay.na')}</span>
         </div>
         <div className="overlay-row">
-          <span className="overlay-label">ID:</span>
-          <span className="overlay-value">{study.patientID || 'N/A'}</span>
+          <span className="overlay-label">{t('overlay.id')}</span>
+          <span className="overlay-value">{study.patientID || t('overlay.na')}</span>
         </div>
         {study.patientBirthDate && (
           <div className="overlay-row">
-            <span className="overlay-label">Nacimiento:</span>
+            <span className="overlay-label">{t('overlay.birthDate')}</span>
             <span className="overlay-value">{formatDate(study.patientBirthDate)}</span>
           </div>
         )}
         {study.patientSex && (
           <div className="overlay-row">
-            <span className="overlay-label">Sexo:</span>
+            <span className="overlay-label">{t('overlay.sex')}</span>
             <span className="overlay-value">{study.patientSex}</span>
           </div>
         )}
@@ -50,15 +52,15 @@ const DicomOverlay: React.FC<DicomOverlayProps> = ({
 
       <div className="overlay-top-right">
         <div className="overlay-row">
-          <span className="overlay-label">Institución:</span>
-          <span className="overlay-value">{study.studyDescription || 'N/A'}</span>
+          <span className="overlay-label">{t('overlay.institution')}</span>
+          <span className="overlay-value">{study.studyDescription || t('overlay.na')}</span>
         </div>
         <div className="overlay-row">
-          <span className="overlay-label">Fecha:</span>
+          <span className="overlay-label">{t('overlay.date')}</span>
           <span className="overlay-value">{formatDate(study.studyDate)}</span>
         </div>
         <div className="overlay-row">
-          <span className="overlay-label">Modalidad:</span>
+          <span className="overlay-label">{t('overlay.modality')}</span>
           <span className="overlay-value">{study.modality}</span>
         </div>
       </div>
@@ -71,7 +73,7 @@ const DicomOverlay: React.FC<DicomOverlayProps> = ({
               <span className="overlay-value">{imageIndex + 1}/{totalImages}</span>
             </div>
             <div className="overlay-row">
-              <span className="overlay-label">Tamaño:</span>
+              <span className="overlay-label">{t('overlay.size')}</span>
               <span className="overlay-value">{instance.rows}x{instance.columns}</span>
             </div>
             <div className="overlay-row">

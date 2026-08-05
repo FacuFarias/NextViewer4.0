@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { getReport, saveReport, deleteReport } from '../services/report';
+import { useTranslation } from '../i18n';
 
 interface ReportPanelProps {
   studyInstanceUID: string;
@@ -12,6 +13,7 @@ const ReportPanel: React.FC<ReportPanelProps> = ({
   patientID,
   accessionNumber 
 }) => {
+  const { t } = useTranslation();
   const [report, setReport] = useState('');
   const [reportId, setReportId] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -20,7 +22,7 @@ const ReportPanel: React.FC<ReportPanelProps> = ({
 
   useEffect(() => {
     loadReport();
-  }, [studyInstanceUID]);
+  }, [studyInstanceUID, t]);
 
   const loadReport = async () => {
     setLoading(true);
@@ -37,7 +39,7 @@ const ReportPanel: React.FC<ReportPanelProps> = ({
       }
     } catch (err) {
       console.error('Failed to load report:', err);
-      setError('Error al cargar reporte');
+      setError(t('report.loadError'));
     } finally {
       setLoading(false);
       setSaved(false);
@@ -61,18 +63,18 @@ const ReportPanel: React.FC<ReportPanelProps> = ({
         setSaved(true);
         setTimeout(() => setSaved(false), 2000);
       } else {
-        setError('Error al guardar');
+        setError(t('report.saveError'));
       }
     } catch (err) {
       console.error('Failed to save report:', err);
-      setError('Error al guardar');
+      setError(t('report.saveError'));
     } finally {
       setLoading(false);
     }
   };
 
   const handleClear = async () => {
-    if (confirm('¿Está seguro de limpiar el reporte?')) {
+    if (confirm(t('report.clearConfirm'))) {
       setReport('');
       if (reportId) {
         await deleteReport(reportId);
@@ -84,9 +86,9 @@ const ReportPanel: React.FC<ReportPanelProps> = ({
   return (
     <div className="report-panel">
       <div className="report-header">
-        <h4>Reporte</h4>
-        {saved && <span className="report-saved-badge">✓ Guardado</span>}
-        {loading && <span className="report-loading-badge">Guardando...</span>}
+        <h4>{t('report.title')}</h4>
+        {saved && <span className="report-saved-badge">{t('report.saved')}</span>}
+        {loading && <span className="report-loading-badge">{t('report.saving')}</span>}
       </div>
       
       {error && (
@@ -100,7 +102,7 @@ const ReportPanel: React.FC<ReportPanelProps> = ({
           setReport(e.target.value);
           setSaved(false);
         }}
-        placeholder="Escriba su reporte aquí..."
+        placeholder={t('report.placeholder')}
         rows={8}
         disabled={loading}
       />
@@ -111,14 +113,14 @@ const ReportPanel: React.FC<ReportPanelProps> = ({
           onClick={handleClear}
           disabled={loading}
         >
-          Limpiar
+          {t('report.clear')}
         </button>
         <button 
           className="report-btn report-btn-save" 
           onClick={handleSave}
           disabled={loading}
         >
-          {loading ? 'Guardando...' : '💾 Guardar'}
+          {loading ? t('report.saving') : t('report.save')}
         </button>
       </div>
     </div>

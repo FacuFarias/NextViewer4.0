@@ -1,4 +1,5 @@
 import { Pool } from 'pg';
+import { ANNOTATION_MIGRATION_SQL, ANNOTATION_MIGRATION_VERSION } from './migrations/annotations';
 
 const pool = new Pool({
   host: process.env.DB_HOST || 'localhost',
@@ -35,6 +36,21 @@ export async function initDatabase(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_reports_study_uid 
       ON measurements.reports(study_uid)
     `);
+
+    await client.query('BEGIN');
+    try {
+      await client.query(ANNOTATION_MIGRATION_SQL);
+      await client.query(
+        `INSERT INTO ia.schema_migrations (version)
+         VALUES ($1)
+         ON CONFLICT (version) DO NOTHING`,
+        [ANNOTATION_MIGRATION_VERSION]
+      );
+      await client.query('COMMIT');
+    } catch (migrationError) {
+      await client.query('ROLLBACK');
+      throw migrationError;
+    }
 
     console.log('Database schema initialized successfully');
   } catch (error) {

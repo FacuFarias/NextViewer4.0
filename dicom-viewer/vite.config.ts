@@ -1,18 +1,32 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import { viteCommonjs } from '@originjs/vite-plugin-commonjs';
+import wasm from 'vite-plugin-wasm';
+import topLevelAwait from 'vite-plugin-top-level-await';
+import { fileURLToPath } from 'node:url';
 
 export default defineConfig({
   plugins: [
+    wasm(),
+    topLevelAwait(),
     react(),
-    viteCommonjs(),
   ],
   optimizeDeps: {
     exclude: ['@cornerstonejs/dicom-image-loader'],
     include: ['dicom-parser'],
   },
+  resolve: {
+    alias: {
+      '@icr/polyseg-wasm': fileURLToPath(
+        new URL('./src/services/polySegWasmStub.ts', import.meta.url)
+      ),
+    },
+  },
   worker: {
     format: 'es',
+    plugins: () => [
+      wasm(),
+      topLevelAwait(),
+    ],
   },
   server: {
     port: 3000,

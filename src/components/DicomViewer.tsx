@@ -152,7 +152,7 @@ const DicomViewer: React.FC = () => {
       <div className="dicom-viewer">
         <header className="viewer-header">
           <div className="header-left">
-            <h1>DICOM Viewer</h1>
+            <h1>Next Viewer</h1>
             <span className="server-badge">dcm4chee</span>
           </div>
           <div className="header-right">
