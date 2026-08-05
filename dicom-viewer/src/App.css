@@ -2124,6 +2124,14 @@ select {
   white-space: nowrap;
 }
 
+.mpr-standard-zoom {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 4px;
+  border-left: 1px solid var(--border-color);
+}
+
 .mpr-brush-size-control input {
   width: 76px;
 }

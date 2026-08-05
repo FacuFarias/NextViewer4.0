@@ -430,6 +430,7 @@ const MPRView: React.FC<MPRViewProps> = ({
   });
   const preparedInstancesRef = useRef<DicomInstance[]>([]);
   const sourceImageIdsRef = useRef<string[]>([]);
+  const focusedViewportRef = useRef<ViewportId>('axial');
   const lastNativeSliceRef = useRef<number>(nativeImageIndex);
   const synchronizingMprRef = useRef(false);
   const renderingEngineRef = useRef<RenderingEngine | null>(null);
@@ -457,14 +458,60 @@ const MPRView: React.FC<MPRViewProps> = ({
   ) || CT_SINUSES_FEATURES[0];
 
   const handleDoubleClick = useCallback((viewportId: ViewportId) => {
+    focusedViewportRef.current = viewportId;
     setMaximizedViewport(prev => prev === viewportId ? null : viewportId);
-    
-    setTimeout(() => {
-      if (renderingEngineRef.current) {
-        renderingEngineRef.current.resize(false, true);
-      }
-    }, 100);
   }, []);
+
+  useEffect(() => {
+    if (isLoading) return;
+
+    const timer = window.setTimeout(() => {
+      const renderingEngine = renderingEngineRef.current;
+      if (!renderingEngine) return;
+
+      renderingEngine.resize(false, true);
+      VIEWPORT_ORDER.forEach(plane => {
+        const viewport = renderingEngine.getViewport(VIEWPORT_CONFIG[plane].id) as any;
+        if (!viewport) return;
+
+        if (maximizedViewport === plane) {
+          // resize() preserves the old parallel scale. A plane rendered in a
+          // small tile would otherwise remain tiny after maximization.
+          viewport.resetCamera({ resetPan: true, resetZoom: true });
+        } else {
+          viewport.resetCameraForResize?.();
+        }
+      });
+      renderingEngine.renderViewports(
+        VIEWPORT_ORDER.map(plane => VIEWPORT_CONFIG[plane].id)
+      );
+    }, 120);
+
+    return () => window.clearTimeout(timer);
+  }, [isLoading, maximizedViewport]);
+
+  const adjustStandardZoom = useCallback((factor: number) => {
+    const renderingEngine = renderingEngineRef.current;
+    if (!renderingEngine) return;
+
+    const focusedViewportId = maximizedViewport || focusedViewportRef.current;
+    const viewport = renderingEngine.getViewport(VIEWPORT_CONFIG[focusedViewportId].id) as any;
+    if (!viewport?.getZoom || !viewport?.setZoom) return;
+
+    const currentZoom = Number(viewport.getZoom()) || 1;
+    viewport.setZoom(Math.max(0.1, Math.min(20, currentZoom * factor)));
+    viewport.render();
+  }, [maximizedViewport]);
+
+  const resetStandardZoom = useCallback(() => {
+    const renderingEngine = renderingEngineRef.current;
+    if (!renderingEngine) return;
+
+    const focusedViewportId = maximizedViewport || focusedViewportRef.current;
+    const viewport = renderingEngine.getViewport(VIEWPORT_CONFIG[focusedViewportId].id) as any;
+    viewport?.resetCamera?.({ resetPan: true, resetZoom: true });
+    viewport?.render?.();
+  }, [maximizedViewport]);
 
   const setActiveAnnotationTool = useCallback((toolName: string) => {
     if (!toolGroupRef.current) return;
@@ -774,7 +821,13 @@ const MPRView: React.FC<MPRViewProps> = ({
         });
 
         toolGroup.setToolActive(ZoomTool.toolName, {
-          bindings: [{ mouseButton: cornerstoneTools.Enums.MouseBindings.Auxiliary }],
+          bindings: [
+            { mouseButton: cornerstoneTools.Enums.MouseBindings.Auxiliary },
+            {
+              mouseButton: cornerstoneTools.Enums.MouseBindings.Wheel,
+              modifierKey: cornerstoneTools.Enums.KeyboardBindings.Ctrl,
+            },
+          ],
         });
 
         toolGroup.setToolActive(StackScrollTool.toolName, {
@@ -1093,6 +1146,7 @@ const MPRView: React.FC<MPRViewProps> = ({
             <div
               ref={element => { viewportRefs.current[plane] = element; }}
               className="mpr-viewport"
+              onPointerDown={() => { focusedViewportRef.current = plane; }}
               onDoubleClick={() => handleDoubleClick(plane)}
             />
           </div>
@@ -1110,6 +1164,32 @@ const MPRView: React.FC<MPRViewProps> = ({
       >
         🖱️ W/L
       </button>
+      <div className="mpr-standard-zoom" title="Zoom estándar">
+        <button
+          className="annotation-tool-btn"
+          disabled={isLoading}
+          onClick={() => adjustStandardZoom(0.8)}
+          title="Alejar"
+        >
+          −
+        </button>
+        <button
+          className="annotation-tool-btn"
+          disabled={isLoading}
+          onClick={resetStandardZoom}
+          title="Restablecer zoom"
+        >
+          100%
+        </button>
+        <button
+          className="annotation-tool-btn"
+          disabled={isLoading}
+          onClick={() => adjustStandardZoom(1.25)}
+          title="Acercar"
+        >
+          +
+        </button>
+      </div>
       {voxelSegmentationEnabled && (
         <>
           <button
@@ -1247,6 +1327,7 @@ const MPRView: React.FC<MPRViewProps> = ({
           <span>{t('mpr.left', { tool: t('mpr.windowLevel') })}</span>
           <span>{t('mpr.right')}</span>
           <span>{t('mpr.middle')}</span>
+          <span>Ctrl + rueda: Zoom</span>
           <span>{t('mpr.wheel')}</span>
           <span>{t('mpr.ctrl')}</span>
           <span>{t('mpr.doubleClick')}</span>
