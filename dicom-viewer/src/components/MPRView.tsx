@@ -44,7 +44,9 @@ interface MPRViewProps {
 const AXIAL_VIEWPORT_ID = 'mpr-axial';
 const SAGITTAL_VIEWPORT_ID = 'mpr-sagittal';
 const CORONAL_VIEWPORT_ID = 'mpr-coronal';
+const VOLUME_3D_VIEWPORT_ID = 'mpr-volume-3d';
 const TOOL_GROUP_ID = 'mpr-tool-group';
+const VOLUME_3D_TOOL_GROUP_ID = 'mpr-volume-3d-tool-group';
 
 type ViewportId = 'axial' | 'sagittal' | 'coronal';
 
@@ -71,6 +73,8 @@ const VIEWPORT_CONFIG: Record<ViewportId, {
 };
 
 const VIEWPORT_ORDER: ViewportId[] = ['axial', 'sagittal', 'coronal'];
+const MPR_VIEWPORT_IDS = VIEWPORT_ORDER.map(plane => VIEWPORT_CONFIG[plane].id);
+const ALL_VIEWPORT_IDS = [...MPR_VIEWPORT_IDS, VOLUME_3D_VIEWPORT_ID];
 
 const mprImagePlaneMetadata = new Map<string, Record<string, any>>();
 let mprMetadataProviderRegistered = false;
@@ -431,14 +435,17 @@ const MPRView: React.FC<MPRViewProps> = ({
   const preparedInstancesRef = useRef<DicomInstance[]>([]);
   const sourceImageIdsRef = useRef<string[]>([]);
   const focusedViewportRef = useRef<ViewportId>('axial');
+  const volume3DViewportRef = useRef<HTMLDivElement | null>(null);
   const lastNativeSliceRef = useRef<number>(nativeImageIndex);
   const synchronizingMprRef = useRef(false);
   const renderingEngineRef = useRef<RenderingEngine | null>(null);
   const toolGroupRef = useRef<any>(null);
+  const volume3DToolGroupRef = useRef<any>(null);
   const initializationGenerationRef = useRef(0);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [maximizedViewport, setMaximizedViewport] = useState<ViewportId | null>(null);
+  const [showVolume3D, setShowVolume3D] = useState(false);
   const [activeTool, setActiveTool] = useState<string>('WindowLevel');
   const [brushSize, setBrushSize] = useState(25);
   const [segmentationReady, setSegmentationReady] = useState(false);
@@ -482,36 +489,42 @@ const MPRView: React.FC<MPRViewProps> = ({
           viewport.resetCameraForResize?.();
         }
       });
-      renderingEngine.renderViewports(
-        VIEWPORT_ORDER.map(plane => VIEWPORT_CONFIG[plane].id)
-      );
+      if (showVolume3D) {
+        const volumeViewport = renderingEngine.getViewport(VOLUME_3D_VIEWPORT_ID) as any;
+        volumeViewport?.resetCameraForResize?.();
+      }
+      renderingEngine.renderViewports(ALL_VIEWPORT_IDS);
     }, 120);
 
     return () => window.clearTimeout(timer);
-  }, [isLoading, maximizedViewport]);
+  }, [isLoading, maximizedViewport, showVolume3D]);
 
   const adjustStandardZoom = useCallback((factor: number) => {
     const renderingEngine = renderingEngineRef.current;
     if (!renderingEngine) return;
 
-    const focusedViewportId = maximizedViewport || focusedViewportRef.current;
-    const viewport = renderingEngine.getViewport(VIEWPORT_CONFIG[focusedViewportId].id) as any;
+    const viewportId = showVolume3D
+      ? VOLUME_3D_VIEWPORT_ID
+      : VIEWPORT_CONFIG[maximizedViewport || focusedViewportRef.current].id;
+    const viewport = renderingEngine.getViewport(viewportId) as any;
     if (!viewport?.getZoom || !viewport?.setZoom) return;
 
     const currentZoom = Number(viewport.getZoom()) || 1;
     viewport.setZoom(Math.max(0.1, Math.min(20, currentZoom * factor)));
     viewport.render();
-  }, [maximizedViewport]);
+  }, [maximizedViewport, showVolume3D]);
 
   const resetStandardZoom = useCallback(() => {
     const renderingEngine = renderingEngineRef.current;
     if (!renderingEngine) return;
 
-    const focusedViewportId = maximizedViewport || focusedViewportRef.current;
-    const viewport = renderingEngine.getViewport(VIEWPORT_CONFIG[focusedViewportId].id) as any;
+    const viewportId = showVolume3D
+      ? VOLUME_3D_VIEWPORT_ID
+      : VIEWPORT_CONFIG[maximizedViewport || focusedViewportRef.current].id;
+    const viewport = renderingEngine.getViewport(viewportId) as any;
     viewport?.resetCamera?.({ resetPan: true, resetZoom: true });
     viewport?.render?.();
-  }, [maximizedViewport]);
+  }, [maximizedViewport, showVolume3D]);
 
   const setActiveAnnotationTool = useCallback((toolName: string) => {
     if (!toolGroupRef.current) return;
@@ -616,7 +629,7 @@ const MPRView: React.FC<MPRViewProps> = ({
     if (!segmentationId || !activeCtSinusesFeature) return;
     const nextVisible = !activeSegmentVisible;
     setMinicatSegmentVisibility(
-      VIEWPORT_ORDER.map(plane => VIEWPORT_CONFIG[plane].id),
+      ALL_VIEWPORT_IDS,
       segmentationId,
       activeCtSinusesFeature,
       nextVisible
@@ -735,6 +748,7 @@ const MPRView: React.FC<MPRViewProps> = ({
         PanTool,
         ZoomTool,
         BrushTool,
+        TrackballRotateTool,
         ToolGroupManager,
         addTool,
       } = cornerstoneTools;
@@ -745,6 +759,7 @@ const MPRView: React.FC<MPRViewProps> = ({
       addTool(StackScrollTool);
       addTool(CrosshairsTool);
       addTool(BrushTool);
+      addTool(TrackballRotateTool);
 
       // MPR is a volume reconstructed from the currently selected series.
       // Complete the image-plane metadata before Cornerstone builds that
@@ -781,14 +796,24 @@ const MPRView: React.FC<MPRViewProps> = ({
       const renderingEngine = new RenderingEngine(renderingEngineId);
       renderingEngineRef.current = renderingEngine;
 
-      const viewportInputs = VIEWPORT_ORDER.map(plane => ({
-        viewportId: VIEWPORT_CONFIG[plane].id,
-        element: viewportRefs.current[plane]!,
-        type: Enums.ViewportType.ORTHOGRAPHIC,
-        defaultOptions: {
-          orientation: VIEWPORT_CONFIG[plane].orientation,
+      const viewportInputs = [
+        ...VIEWPORT_ORDER.map(plane => ({
+          viewportId: VIEWPORT_CONFIG[plane].id,
+          element: viewportRefs.current[plane]!,
+          type: Enums.ViewportType.ORTHOGRAPHIC,
+          defaultOptions: {
+            orientation: VIEWPORT_CONFIG[plane].orientation,
+          },
+        })),
+        {
+          viewportId: VOLUME_3D_VIEWPORT_ID,
+          element: volume3DViewportRef.current!,
+          type: Enums.ViewportType.VOLUME_3D,
+          defaultOptions: {
+            background: [0, 0, 0] as [number, number, number],
+          },
         },
-      }));
+      ];
 
       renderingEngine.setViewports(viewportInputs);
       // The MPR component is mounted beside the native Stack. Give
@@ -840,10 +865,28 @@ const MPRView: React.FC<MPRViewProps> = ({
 
       }
 
+      const volume3DToolGroup = ToolGroupManager.createToolGroup(VOLUME_3D_TOOL_GROUP_ID);
+      volume3DToolGroupRef.current = volume3DToolGroup;
+      if (volume3DToolGroup) {
+        volume3DToolGroup.addTool(TrackballRotateTool.toolName);
+        volume3DToolGroup.addTool(PanTool.toolName);
+        volume3DToolGroup.addTool(ZoomTool.toolName);
+        volume3DToolGroup.addViewport(VOLUME_3D_VIEWPORT_ID, renderingEngineId);
+        volume3DToolGroup.setToolActive(TrackballRotateTool.toolName, {
+          bindings: [{ mouseButton: cornerstoneTools.Enums.MouseBindings.Primary }],
+        });
+        volume3DToolGroup.setToolActive(PanTool.toolName, {
+          bindings: [{ mouseButton: cornerstoneTools.Enums.MouseBindings.Secondary }],
+        });
+        volume3DToolGroup.setToolActive(ZoomTool.toolName, {
+          bindings: [{ mouseButton: cornerstoneTools.Enums.MouseBindings.Auxiliary }],
+        });
+      }
+
       await setVolumesForViewports(
         renderingEngine,
         [{ volumeId }],
-        VIEWPORT_ORDER.map(plane => VIEWPORT_CONFIG[plane].id)
+        ALL_VIEWPORT_IDS
       );
       if (generation !== initializationGenerationRef.current) return;
 
@@ -853,9 +896,25 @@ const MPRView: React.FC<MPRViewProps> = ({
             studyInstanceUID,
             seriesInstanceUID: series.seriesInstanceUID,
             volumeId,
-            viewportIds: VIEWPORT_ORDER.map(plane => VIEWPORT_CONFIG[plane].id),
+            viewportIds: MPR_VIEWPORT_IDS,
           });
           segmentationIdRef.current = segmentationId;
+          const axialLabelmapRepresentation = cornerstoneTools.segmentation.state.getSegmentationRepresentation(
+            AXIAL_VIEWPORT_ID,
+            {
+              segmentationId,
+              type: cornerstoneTools.Enums.SegmentationRepresentations.Labelmap,
+            }
+          );
+          cornerstoneTools.segmentation.addSurfaceRepresentationToViewport(
+            VOLUME_3D_VIEWPORT_ID,
+            [{
+              segmentationId,
+              config: axialLabelmapRepresentation?.colorLUTIndex !== undefined
+                ? { colorLUTOrIndex: axialLabelmapRepresentation.colorLUTIndex }
+                : undefined,
+            }]
+          );
           setActiveMinicatSegment(segmentationId, CT_SINUSES_FEATURES[0]);
           cornerstoneTools.utilities.segmentation.setBrushSizeForToolGroup(
             TOOL_GROUP_ID,
@@ -871,7 +930,7 @@ const MPRView: React.FC<MPRViewProps> = ({
         }
       }
 
-      const activeViewportIds = VIEWPORT_ORDER.map(plane => VIEWPORT_CONFIG[plane].id);
+      const activeViewportIds = ALL_VIEWPORT_IDS;
       renderingEngine.renderViewports(activeViewportIds);
       renderingEngine.resize(false, true);
       renderingEngine.renderViewports(activeViewportIds);
@@ -1100,6 +1159,10 @@ const MPRView: React.FC<MPRViewProps> = ({
         cornerstoneTools.ToolGroupManager.destroyToolGroup(TOOL_GROUP_ID);
         toolGroupRef.current = null;
       }
+      if (volume3DToolGroupRef.current) {
+        cornerstoneTools.ToolGroupManager.destroyToolGroup(VOLUME_3D_TOOL_GROUP_ID);
+        volume3DToolGroupRef.current = null;
+      }
       if (renderingEngineRef.current) {
         renderingEngineRef.current.destroy();
         renderingEngineRef.current = null;
@@ -1115,8 +1178,10 @@ const MPRView: React.FC<MPRViewProps> = ({
   // Keep Cornerstone's camera synchronized with the CSS layout. The engine
   // recalculates the canvas aspect ratio when the window or sidebars change.
   useEffect(() => {
-    const activeViewportIds = VIEWPORT_ORDER.map(plane => VIEWPORT_CONFIG[plane].id);
-    const elements = VIEWPORT_ORDER.map(plane => viewportRefs.current[plane]).filter(
+    const elements = [
+      ...VIEWPORT_ORDER.map(plane => viewportRefs.current[plane]),
+      volume3DViewportRef.current,
+    ].filter(
       (element): element is HTMLDivElement => Boolean(element)
     );
     const resizeObserver = new ResizeObserver(() => {
@@ -1124,7 +1189,7 @@ const MPRView: React.FC<MPRViewProps> = ({
       if (!engine) return;
 
       engine.resize(false, true);
-      engine.renderViewports(activeViewportIds);
+      engine.renderViewports(ALL_VIEWPORT_IDS);
     });
 
     elements.forEach(element => resizeObserver.observe(element));
@@ -1132,6 +1197,7 @@ const MPRView: React.FC<MPRViewProps> = ({
   }, []);
 
   const getViewportClass = (viewportId: ViewportId) => {
+    if (showVolume3D) return 'mpr-viewport-container hidden';
     if (maximizedViewport === null) return 'mpr-viewport-container';
     if (maximizedViewport === viewportId) return 'mpr-viewport-container maximized';
     return 'mpr-viewport-container hidden';
@@ -1190,6 +1256,16 @@ const MPRView: React.FC<MPRViewProps> = ({
           +
         </button>
       </div>
+      {voxelSegmentationEnabled && (
+        <button
+          className={`annotation-tool-btn ${showVolume3D ? 'active' : ''}`}
+          disabled={isLoading || !segmentationReady}
+          onClick={() => setShowVolume3D(current => !current)}
+          title={showVolume3D ? 'Volver a MPR' : 'Mostrar bloque 3D de la segmentación'}
+        >
+          {showVolume3D ? '▣ MPR' : '▣ 3D'}
+        </button>
+      )}
       {voxelSegmentationEnabled && (
         <>
           <button
@@ -1319,8 +1395,16 @@ const MPRView: React.FC<MPRViewProps> = ({
 
         {renderAnnotationToolbar()}
 
-        <div className={`mpr-grid ${maximizedViewport ? 'single-viewport' : ''}`}>
+        <div className={`mpr-grid ${maximizedViewport || showVolume3D ? 'single-viewport' : ''} ${showVolume3D ? 'volume-3d-active' : ''}`}>
           {renderViewports()}
+          <div className={`mpr-viewport-container mpr-volume-3d-container ${showVolume3D ? 'active' : 'hidden'}`}>
+            <div className="mpr-viewport-label">Volumen 3D · segmentación</div>
+            <div
+              ref={volume3DViewportRef}
+              className="mpr-viewport"
+              onPointerDown={() => setShowVolume3D(true)}
+            />
+          </div>
         </div>
 
         <div className="mpr-tools-info">
@@ -1363,8 +1447,16 @@ const MPRView: React.FC<MPRViewProps> = ({
 
       {renderAnnotationToolbar()}
 
-      <div className={`mpr-grid ${maximizedViewport ? 'single-viewport' : ''}`}>
+      <div className={`mpr-grid ${maximizedViewport || showVolume3D ? 'single-viewport' : ''} ${showVolume3D ? 'volume-3d-active' : ''}`}>
         {renderViewports()}
+        <div className={`mpr-viewport-container mpr-volume-3d-container ${showVolume3D ? 'active' : 'hidden'}`}>
+          <div className="mpr-viewport-label">Volumen 3D · segmentación</div>
+          <div
+            ref={volume3DViewportRef}
+            className="mpr-viewport"
+            onPointerDown={() => setShowVolume3D(true)}
+          />
+        </div>
       </div>
 
       <div className="mpr-tools-info">

@@ -2093,6 +2093,15 @@ select {
   display: none;
 }
 
+.mpr-grid.volume-3d-active .mpr-volume-3d-container.active {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.mpr-volume-3d-container .mpr-viewport-label {
+  border-left-color: #43d17b;
+}
+
 /* MPR Annotation Toolbar */
 .mpr-annotation-toolbar {
   display: flex;
