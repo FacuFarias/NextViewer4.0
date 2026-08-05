@@ -1,5 +1,9 @@
 import { Pool } from 'pg';
 import { ANNOTATION_MIGRATION_SQL, ANNOTATION_MIGRATION_VERSION } from './migrations/annotations';
+import {
+  SEGMENTATION_OBJECT_MIGRATION_SQL,
+  SEGMENTATION_OBJECT_MIGRATION_VERSION,
+} from './migrations/segmentationObjects';
 
 const pool = new Pool({
   host: process.env.DB_HOST || 'localhost',
@@ -45,6 +49,13 @@ export async function initDatabase(): Promise<void> {
          VALUES ($1)
          ON CONFLICT (version) DO NOTHING`,
         [ANNOTATION_MIGRATION_VERSION]
+      );
+      await client.query(SEGMENTATION_OBJECT_MIGRATION_SQL);
+      await client.query(
+        `INSERT INTO ia.schema_migrations (version)
+         VALUES ($1)
+         ON CONFLICT (version) DO NOTHING`,
+        [SEGMENTATION_OBJECT_MIGRATION_VERSION]
       );
       await client.query('COMMIT');
     } catch (migrationError) {

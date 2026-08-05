@@ -30,6 +30,8 @@ export const DEFAULT_CONFIG: ViewerConfig = {
   windowLevelPresetsEnabled: true,
   filmstripEnabled: true,
   reportServiceEnabled: true,
-  ctSinusesMinicatMeasurementsEnabled: false,
+  // The experimental branch is dedicated to MINICAT SINUS voxel editing.
+  // It remains configurable so deployments can hide the panel if needed.
+  ctSinusesMinicatMeasurementsEnabled: true,
   nasalSeptumDeviationEnabled: true,
 };

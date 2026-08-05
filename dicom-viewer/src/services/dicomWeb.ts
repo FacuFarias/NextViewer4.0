@@ -143,6 +143,12 @@ class DicomWebService {
     return response.arrayBuffer();
   }
 
+  private async getStoreHeaders(): Promise<Record<string, string>> {
+    const headers = await this.getDicomHeaders();
+    headers.Accept = 'application/dicom+json';
+    return headers;
+  }
+
   /**
    * Fetches an image response for the persistent preloader. The response is
    * returned unconsumed so the cache layer can store it without decoding it
@@ -347,6 +353,39 @@ class DicomWebService {
     );
     
     return this.fetchDicom(url);
+  }
+
+  async getInstanceDicom(
+    studyInstanceUID: string,
+    seriesInstanceUID: string,
+    sopInstanceUID: string
+  ): Promise<ArrayBuffer> {
+    return this.fetchDicom(this.getInstanceWadoUriUrl(
+      studyInstanceUID,
+      seriesInstanceUID,
+      sopInstanceUID
+    ));
+  }
+
+  async storeDicomObject(arrayBuffer: ArrayBuffer): Promise<any> {
+    const boundary = `nextviewer-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const prefix = `--${boundary}\r\nContent-Type: application/dicom\r\n\r\n`;
+    const suffix = `\r\n--${boundary}--\r\n`;
+    const body = new Blob([prefix, arrayBuffer, suffix], {
+      type: `multipart/related; type="application/dicom"; boundary=${boundary}`,
+    });
+    const headers = await this.getStoreHeaders();
+    headers['Content-Type'] = `multipart/related; type="application/dicom"; boundary=${boundary}`;
+    const response = await fetch(`${this.config.baseUrl}/studies`, {
+      method: 'POST',
+      headers,
+      body,
+    });
+    const responseBody = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(`DICOMweb STOW-RS error: ${response.status} ${response.statusText}`);
+    }
+    return responseBody;
   }
 }
 

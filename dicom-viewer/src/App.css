@@ -2113,6 +2113,60 @@ select {
   white-space: nowrap;
 }
 
+.mpr-brush-size-control,
+.mpr-active-segment {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 6px;
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+
+.mpr-brush-size-control input {
+  width: 76px;
+}
+
+.mpr-segment-color {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
+.mpr-segmentation-select {
+  min-width: 210px;
+  max-width: 280px;
+  padding: 5px 6px;
+  background: var(--background-color);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+}
+
+.mpr-segmentation-status,
+.mpr-segmentation-error {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 6px;
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+
+.mpr-segmentation-status {
+  color: #9ccc65;
+}
+
+.mpr-segmentation-error {
+  color: #ff8a80;
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 @media (max-width: 1100px) {
   .mpr-composite-layout {
     grid-template-columns: minmax(0, 1fr) minmax(330px, 0.9fr);

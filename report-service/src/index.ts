@@ -3,6 +3,7 @@ import cors from 'cors';
 import { initDatabase } from './db';
 import reportRoutes from './routes/reports';
 import annotationRoutes from './routes/annotations';
+import segmentationObjectRoutes from './routes/segmentationObjects';
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '3701');
@@ -14,6 +15,7 @@ app.use(express.json({ limit: '25mb' }));
 // Routes
 app.use('/api', reportRoutes);
 app.use('/api', annotationRoutes);
+app.use('/api', segmentationObjectRoutes);
 
 // Health check
 app.get('/health', (req, res) => {

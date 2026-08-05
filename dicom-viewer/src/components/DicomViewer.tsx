@@ -216,6 +216,11 @@ const DicomViewer: React.FC = () => {
   const [rightSidebarWidth, setRightSidebarWidth] = useState(240);
   const [activeTool, setActiveTool] = useState('WindowLevel');
   const [selectedCtSinusesFeatureKey, setSelectedCtSinusesFeatureKey] = useState<string | null>(null);
+  const [voxelSegmentationDirty, setVoxelSegmentationDirty] = useState(false);
+
+  useEffect(() => {
+    setVoxelSegmentationDirty(false);
+  }, [state.currentSeries?.seriesInstanceUID]);
   const [nasalSeptumDeviationActive, setNasalSeptumDeviationActive] = useState(false);
   const [confirmRequest, setConfirmRequest] = useState<{
     title: string;
@@ -582,7 +587,7 @@ const DicomViewer: React.FC = () => {
               <section className="mpr-reconstruction-panel">
                 <div className="mpr-reconstruction-header">
                   <span className="mpr-reconstruction-badge">{t('viewer.mprReconstructions')}</span>
-                  <span>{t('viewer.spatialOnly')}</span>
+                  <span>{voxelSegmentationDirty ? '● Segmentación sin guardar' : t('viewer.spatialOnly')}</span>
                 </div>
                 {state.currentStudy && state.currentSeries && state.isLoaded ? (
                   <MPRView
@@ -592,6 +597,9 @@ const DicomViewer: React.FC = () => {
                     onNativeSliceChange={handleNativeSliceChange}
                     onBack={() => {}}
                     embedded={true}
+                    voxelSegmentationEnabled={config.ctSinusesMinicatMeasurementsEnabled && isCT}
+                    activeCtSinusesFeatureKey={selectedCtSinusesFeatureKey}
+                    onVoxelSegmentationDirty={setVoxelSegmentationDirty}
                   />
                 ) : (
                   <div className="mpr-placeholder">

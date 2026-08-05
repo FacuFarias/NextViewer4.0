@@ -12,6 +12,22 @@ import * as cornerstoneTools from '@cornerstonejs/tools';
 import { DicomInstance, DicomSeries } from '../types/dicom';
 import { dicomWebService, mergeDefinedDicomMetadata } from '../services/dicomWeb';
 import { localizeError, useTranslation } from '../i18n';
+import { CT_SINUSES_FEATURES } from '../services/ctSinusesMeasurements';
+import {
+  destroyMinicatSegmentation,
+  ensureMinicatLabelmap,
+  getMinicatLabelmapData,
+  importMinicatDICOMSEG,
+  isMinicatSegmentLocked,
+  MINICAT_VOXEL_SEGMENTATION_ONTOLOGY_VERSION,
+  readMinicatDicomSegIdentifiers,
+  serializeMinicatSegmentation,
+  setActiveMinicatSegment,
+  setMinicatSegmentLocked,
+  setMinicatSegmentVisibility,
+} from '../services/minicatVoxelSegmentation';
+import { segmentationObjectService } from '../services/segmentationObjects';
+import { SegmentationObject } from '../types/segmentationObjects';
 
 interface MPRViewProps {
   studyInstanceUID: string;
@@ -20,6 +36,9 @@ interface MPRViewProps {
   embedded?: boolean;
   nativeImageIndex?: number;
   onNativeSliceChange?: (imageIndex: number) => void;
+  voxelSegmentationEnabled?: boolean;
+  activeCtSinusesFeatureKey?: string | null;
+  onVoxelSegmentationDirty?: (dirty: boolean) => void;
 }
 
 const AXIAL_VIEWPORT_ID = 'mpr-axial';
@@ -399,6 +418,9 @@ const MPRView: React.FC<MPRViewProps> = ({
   embedded = false,
   nativeImageIndex = 0,
   onNativeSliceChange,
+  voxelSegmentationEnabled = false,
+  activeCtSinusesFeatureKey = null,
+  onVoxelSegmentationDirty,
 }) => {
   const { t } = useTranslation();
   const viewportRefs = useRef<Record<ViewportId, HTMLDivElement | null>>({
@@ -407,6 +429,7 @@ const MPRView: React.FC<MPRViewProps> = ({
     coronal: null,
   });
   const preparedInstancesRef = useRef<DicomInstance[]>([]);
+  const sourceImageIdsRef = useRef<string[]>([]);
   const lastNativeSliceRef = useRef<number>(nativeImageIndex);
   const synchronizingMprRef = useRef(false);
   const renderingEngineRef = useRef<RenderingEngine | null>(null);
@@ -416,7 +439,22 @@ const MPRView: React.FC<MPRViewProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [maximizedViewport, setMaximizedViewport] = useState<ViewportId | null>(null);
   const [activeTool, setActiveTool] = useState<string>('WindowLevel');
+  const [brushSize, setBrushSize] = useState(25);
+  const [segmentationReady, setSegmentationReady] = useState(false);
+  const [segmentationError, setSegmentationError] = useState<string | null>(null);
+  const [segmentationDirty, setSegmentationDirty] = useState(false);
+  const [savedSegmentations, setSavedSegmentations] = useState<SegmentationObject[]>([]);
+  const [selectedSavedSegmentationId, setSelectedSavedSegmentationId] = useState('');
+  const [segmentationBusy, setSegmentationBusy] = useState(false);
+  const [segmentationOperationError, setSegmentationOperationError] = useState<string | null>(null);
+  const [activeSegmentLocked, setActiveSegmentLocked] = useState(false);
+  const [activeSegmentVisible, setActiveSegmentVisible] = useState(true);
+  const segmentationIdRef = useRef<string | null>(null);
   const volumeId = getMprVolumeId(studyInstanceUID, series.seriesInstanceUID);
+
+  const activeCtSinusesFeature = CT_SINUSES_FEATURES.find(feature =>
+    feature.key === activeCtSinusesFeatureKey
+  ) || CT_SINUSES_FEATURES[0];
 
   const handleDoubleClick = useCallback((viewportId: ViewportId) => {
     setMaximizedViewport(prev => prev === viewportId ? null : viewportId);
@@ -431,23 +469,206 @@ const MPRView: React.FC<MPRViewProps> = ({
   const setActiveAnnotationTool = useCallback((toolName: string) => {
     if (!toolGroupRef.current) return;
 
-    // MPR panes are reconstructed views.  They remain useful for orientation
-    // and crosshair navigation, but never become annotation targets.
-    if (toolName !== cornerstoneTools.WindowLevelTool.toolName) {
-      setActiveTool(cornerstoneTools.WindowLevelTool.toolName);
-      return;
-    }
+    const { WindowLevelTool, BrushTool } = cornerstoneTools;
+    const supportedTools = [WindowLevelTool.toolName, BrushTool.toolName];
+    const nextTool = supportedTools.includes(toolName)
+      ? toolName
+      : WindowLevelTool.toolName;
 
-    const { WindowLevelTool } = cornerstoneTools;
-
-    toolGroupRef.current.setToolPassive(WindowLevelTool.toolName);
-
-    toolGroupRef.current.setToolActive(toolName, {
+    supportedTools.forEach(candidate => toolGroupRef.current.setToolPassive(candidate));
+    toolGroupRef.current.setToolActive(nextTool, {
       bindings: [{ mouseButton: cornerstoneTools.Enums.MouseBindings.Primary }],
     });
 
-    setActiveTool(toolName);
+    if (nextTool === BrushTool.toolName) {
+      const brush = toolGroupRef.current.getToolInstance?.(BrushTool.toolName);
+      brush?.setActiveStrategy?.('FILL_INSIDE_CIRCLE');
+    }
+
+    setActiveTool(nextTool);
   }, []);
+
+  const setVoxelSegmentationTool = useCallback((toolName: 'Brush' | 'Eraser' | 'WindowLevel') => {
+    if (!toolGroupRef.current || !segmentationReady) return;
+    const { WindowLevelTool, BrushTool } = cornerstoneTools;
+    const brush = toolGroupRef.current.getToolInstance?.(BrushTool.toolName);
+    const nextTool = toolName === 'Eraser' ? BrushTool.toolName : toolName;
+
+    [WindowLevelTool.toolName, BrushTool.toolName].forEach(candidate => {
+      toolGroupRef.current.setToolPassive(candidate);
+    });
+
+    if (nextTool === BrushTool.toolName) {
+      brush?.setActiveStrategy?.(
+        toolName === 'Eraser' ? 'ERASE_INSIDE_CIRCLE' : 'FILL_INSIDE_CIRCLE'
+      );
+    }
+    toolGroupRef.current.setToolActive(nextTool, {
+      bindings: [{ mouseButton: cornerstoneTools.Enums.MouseBindings.Primary }],
+    });
+    setActiveTool(toolName);
+  }, [segmentationReady]);
+
+  const updateBrushSize = useCallback((value: number) => {
+    const safeValue = Math.max(1, Math.min(256, Math.round(value)));
+    setBrushSize(safeValue);
+    cornerstoneTools.utilities.segmentation.setBrushSizeForToolGroup(
+      TOOL_GROUP_ID,
+      safeValue,
+      cornerstoneTools.BrushTool.toolName
+    );
+  }, []);
+
+  const undoVoxelEdit = useCallback(() => {
+    const brush = toolGroupRef.current?.getToolInstance?.(cornerstoneTools.BrushTool.toolName);
+    brush?.undo?.();
+  }, []);
+
+  const redoVoxelEdit = useCallback(() => {
+    const brush = toolGroupRef.current?.getToolInstance?.(cornerstoneTools.BrushTool.toolName);
+    brush?.redo?.();
+  }, []);
+
+  useEffect(() => {
+    if (!voxelSegmentationEnabled) {
+      setSavedSegmentations([]);
+      setSelectedSavedSegmentationId('');
+      return;
+    }
+
+    let cancelled = false;
+    setSegmentationOperationError(null);
+    void segmentationObjectService.list(studyInstanceUID, series.seriesInstanceUID)
+      .then(objects => {
+        if (!cancelled) setSavedSegmentations(objects);
+      })
+      .catch(error => {
+        if (!cancelled) {
+          setSegmentationOperationError(error instanceof Error ? error.message : 'No se pudieron cargar las segmentaciones');
+        }
+      });
+    return () => { cancelled = true; };
+  }, [studyInstanceUID, series.seriesInstanceUID, voxelSegmentationEnabled]);
+
+  useEffect(() => {
+    if (!segmentationReady || !segmentationIdRef.current || !activeCtSinusesFeature) return;
+    setActiveSegmentLocked(isMinicatSegmentLocked(segmentationIdRef.current, activeCtSinusesFeature));
+    setActiveSegmentVisible(true);
+  }, [activeCtSinusesFeature, segmentationReady]);
+
+  const toggleActiveSegmentLock = useCallback(() => {
+    const segmentationId = segmentationIdRef.current;
+    if (!segmentationId || !activeCtSinusesFeature) return;
+    const nextLocked = !activeSegmentLocked;
+    setMinicatSegmentLocked(segmentationId, activeCtSinusesFeature, nextLocked);
+    setActiveSegmentLocked(nextLocked);
+  }, [activeCtSinusesFeature, activeSegmentLocked]);
+
+  const toggleActiveSegmentVisibility = useCallback(() => {
+    const segmentationId = segmentationIdRef.current;
+    if (!segmentationId || !activeCtSinusesFeature) return;
+    const nextVisible = !activeSegmentVisible;
+    setMinicatSegmentVisibility(
+      VIEWPORT_ORDER.map(plane => VIEWPORT_CONFIG[plane].id),
+      segmentationId,
+      activeCtSinusesFeature,
+      nextVisible
+    );
+    setActiveSegmentVisible(nextVisible);
+  }, [activeCtSinusesFeature, activeSegmentVisible]);
+
+  const saveVoxelSegmentation = useCallback(async () => {
+    const segmentationId = segmentationIdRef.current;
+    if (!segmentationId || !segmentationReady || segmentationBusy) return;
+
+    try {
+      setSegmentationBusy(true);
+      setSegmentationOperationError(null);
+      const labelmap = getMinicatLabelmapData(segmentationId);
+      if (!labelmap.scalarData.some(value => value > 0)) {
+        throw new Error('La segmentación está vacía; pinta al menos un voxel antes de guardar');
+      }
+
+      const dicomBuffer = serializeMinicatSegmentation(segmentationId, volumeId);
+      const identifiers = readMinicatDicomSegIdentifiers(dicomBuffer);
+      await dicomWebService.storeDicomObject(dicomBuffer);
+
+      const previous = savedSegmentations.find(object => object.id === selectedSavedSegmentationId);
+      const sourceFrameOfReferenceUID = preparedInstancesRef.current.find(instance => instance.frameOfReferenceUID)
+        ?.frameOfReferenceUID;
+      const created = await segmentationObjectService.create({
+        studyInstanceUID,
+        sourceSeriesInstanceUID: series.seriesInstanceUID,
+        segmentationSeriesInstanceUID: identifiers.seriesInstanceUID,
+        segmentationSOPInstanceUID: identifiers.sopInstanceUID,
+        name: 'MINICAT SINUS · Segmentación voxel 3D',
+        description: 'Segmentación volumétrica editable de las 19 estructuras de MINICAT SINUS',
+        ontologyVersion: MINICAT_VOXEL_SEGMENTATION_ONTOLOGY_VERSION,
+        dimensions: labelmap.dimensions,
+        spacing: labelmap.spacing,
+        frameOfReferenceUID: identifiers.frameOfReferenceUID || sourceFrameOfReferenceUID || null,
+        version: previous ? previous.version + 1 : 1,
+        supersedesObjectId: previous?.id || null,
+        status: 'draft',
+      });
+
+      setSavedSegmentations(current => [created, ...current.filter(object => object.id !== created.id)]);
+      setSelectedSavedSegmentationId(created.id);
+      setSegmentationDirty(false);
+      onVoxelSegmentationDirty?.(false);
+    } catch (error) {
+      console.error('[MPR] failed to save DICOM SEG', error);
+      setSegmentationOperationError(error instanceof Error ? error.message : 'No se pudo guardar el DICOM SEG');
+    } finally {
+      setSegmentationBusy(false);
+    }
+  }, [
+    segmentationReady,
+    segmentationBusy,
+    volumeId,
+    studyInstanceUID,
+    series.seriesInstanceUID,
+    savedSegmentations,
+    selectedSavedSegmentationId,
+    onVoxelSegmentationDirty,
+  ]);
+
+  const openSavedSegmentation = useCallback(async () => {
+    const segmentationId = segmentationIdRef.current;
+    const selected = savedSegmentations.find(object => object.id === selectedSavedSegmentationId);
+    if (!segmentationId || !selected || !segmentationReady || segmentationBusy) return;
+    if (segmentationDirty && !window.confirm('Hay cambios no guardados. ¿Deseas reemplazarlos con esta segmentación?')) {
+      return;
+    }
+
+    try {
+      setSegmentationBusy(true);
+      setSegmentationOperationError(null);
+      if (!sourceImageIdsRef.current.length) throw new Error('La serie CT fuente aún no está preparada');
+      const dicomBuffer = await dicomWebService.getInstanceDicom(
+        studyInstanceUID,
+        selected.segmentationSeriesInstanceUID,
+        selected.segmentationSOPInstanceUID
+      );
+      await importMinicatDICOMSEG(segmentationId, volumeId, sourceImageIdsRef.current, dicomBuffer);
+      setSegmentationDirty(false);
+      onVoxelSegmentationDirty?.(false);
+    } catch (error) {
+      console.error('[MPR] failed to open DICOM SEG', error);
+      setSegmentationOperationError(error instanceof Error ? error.message : 'No se pudo abrir el DICOM SEG');
+    } finally {
+      setSegmentationBusy(false);
+    }
+  }, [
+    selectedSavedSegmentationId,
+    savedSegmentations,
+    segmentationReady,
+    segmentationBusy,
+    segmentationDirty,
+    studyInstanceUID,
+    volumeId,
+    onVoxelSegmentationDirty,
+  ]);
 
   const initMPR = useCallback(async () => {
     if (!VIEWPORT_ORDER.every(plane => viewportRefs.current[plane])) {
@@ -466,6 +687,7 @@ const MPRView: React.FC<MPRViewProps> = ({
         CrosshairsTool,
         PanTool,
         ZoomTool,
+        BrushTool,
         ToolGroupManager,
         addTool,
       } = cornerstoneTools;
@@ -475,6 +697,7 @@ const MPRView: React.FC<MPRViewProps> = ({
       addTool(WindowLevelTool);
       addTool(StackScrollTool);
       addTool(CrosshairsTool);
+      addTool(BrushTool);
 
       // MPR is a volume reconstructed from the currently selected series.
       // Complete the image-plane metadata before Cornerstone builds that
@@ -492,6 +715,7 @@ const MPRView: React.FC<MPRViewProps> = ({
           );
           return `wadouri:${imageUrl}`;
         });
+      sourceImageIdsRef.current = imageIds;
 
       registerMprImagePlaneMetadata(imageIds, mprInstances);
 
@@ -533,6 +757,9 @@ const MPRView: React.FC<MPRViewProps> = ({
         toolGroup.addTool(WindowLevelTool.toolName);
         toolGroup.addTool(StackScrollTool.toolName);
         toolGroup.addTool(CrosshairsTool.toolName);
+        if (voxelSegmentationEnabled) {
+          toolGroup.addTool(BrushTool.toolName);
+        }
 
         VIEWPORT_ORDER.forEach(plane => {
           toolGroup.addViewport(VIEWPORT_CONFIG[plane].id, renderingEngineId);
@@ -567,6 +794,30 @@ const MPRView: React.FC<MPRViewProps> = ({
       );
       if (generation !== initializationGenerationRef.current) return;
 
+      if (voxelSegmentationEnabled) {
+        try {
+          const segmentationId = await ensureMinicatLabelmap({
+            studyInstanceUID,
+            seriesInstanceUID: series.seriesInstanceUID,
+            volumeId,
+            viewportIds: VIEWPORT_ORDER.map(plane => VIEWPORT_CONFIG[plane].id),
+          });
+          segmentationIdRef.current = segmentationId;
+          setActiveMinicatSegment(segmentationId, CT_SINUSES_FEATURES[0]);
+          cornerstoneTools.utilities.segmentation.setBrushSizeForToolGroup(
+            TOOL_GROUP_ID,
+            25,
+            BrushTool.toolName
+          );
+          setSegmentationReady(true);
+          setSegmentationError(null);
+        } catch (error) {
+          console.error('[MPR] failed to initialize voxel segmentation', error);
+          setSegmentationError(error instanceof Error ? error.message : 'No se pudo inicializar el Labelmap');
+          setSegmentationReady(false);
+        }
+      }
+
       const activeViewportIds = VIEWPORT_ORDER.map(plane => VIEWPORT_CONFIG[plane].id);
       renderingEngine.renderViewports(activeViewportIds);
       renderingEngine.resize(false, true);
@@ -579,7 +830,26 @@ const MPRView: React.FC<MPRViewProps> = ({
       setError(err instanceof Error ? err.message : 'Failed to initialize MPR');
       setIsLoading(false);
     }
-  }, [studyInstanceUID, series.seriesInstanceUID, volumeId]);
+  }, [studyInstanceUID, series, volumeId, voxelSegmentationEnabled]);
+
+  useEffect(() => {
+    const segmentationId = segmentationIdRef.current;
+    if (!segmentationId || !segmentationReady || !activeCtSinusesFeature) return;
+    setActiveMinicatSegment(segmentationId, activeCtSinusesFeature);
+  }, [activeCtSinusesFeature, segmentationReady]);
+
+  useEffect(() => {
+    if (!segmentationReady || !onVoxelSegmentationDirty) return;
+    const segmentationEvent = (cornerstoneTools.Enums.Events as any).SEGMENTATION_DATA_MODIFIED;
+    if (!segmentationEvent) return;
+    const handleSegmentationModified = (event: any) => {
+      if (event.detail?.segmentationId && event.detail.segmentationId !== segmentationIdRef.current) return;
+      setSegmentationDirty(true);
+      onVoxelSegmentationDirty(true);
+    };
+    eventTarget.addEventListener(segmentationEvent, handleSegmentationModified);
+    return () => eventTarget.removeEventListener(segmentationEvent, handleSegmentationModified);
+  }, [onVoxelSegmentationDirty, segmentationReady]);
 
   const setMprCrosshairCenter = useCallback((
     worldPoint: number[],
@@ -760,6 +1030,10 @@ const MPRView: React.FC<MPRViewProps> = ({
       // current engine. This prevents a stale async initializer from using a
       // RenderingEngine instance after cleanup.
       initializationGenerationRef.current += 1;
+      setSegmentationReady(false);
+      setSegmentationDirty(false);
+      destroyMinicatSegmentation(segmentationIdRef.current);
+      segmentationIdRef.current = null;
       // MPR annotations are bound to the current volume rendering engine and
       // viewport elements.  Keeping them in the global Cornerstone state
       // makes the next MPR instance incorrectly treat stale annotations as
@@ -779,11 +1053,11 @@ const MPRView: React.FC<MPRViewProps> = ({
       }
       try {
           cache.removeVolumeLoadObject(volumeId);
-      } catch (e) {
+      } catch {
         // Ignore
       }
     };
-  }, [initMPR]);
+  }, [initMPR, volumeId]);
 
   // Keep Cornerstone's camera synchronized with the CSS layout. The engine
   // recalculates the canvas aspect ratio when the window or sidebars change.
@@ -836,7 +1110,114 @@ const MPRView: React.FC<MPRViewProps> = ({
       >
         🖱️ W/L
       </button>
-      <span className="mpr-readonly-indicator">🔒 {t('viewer.spatialOnly')}</span>
+      {voxelSegmentationEnabled && (
+        <>
+          <button
+            className={`annotation-tool-btn ${activeTool === 'Brush' ? 'active' : ''}`}
+            disabled={!segmentationReady}
+            onClick={() => setVoxelSegmentationTool('Brush')}
+            title="Pincel voxel"
+          >
+            🖌 Brush
+          </button>
+          <button
+            className={`annotation-tool-btn ${activeTool === 'Eraser' ? 'active' : ''}`}
+            disabled={!segmentationReady}
+            onClick={() => setVoxelSegmentationTool('Eraser')}
+            title="Borrador voxel"
+          >
+            ◌ Eraser
+          </button>
+          <label className="mpr-brush-size-control">
+            <span>Size</span>
+            <input
+              type="range"
+              min="1"
+              max="128"
+              value={brushSize}
+              onChange={event => updateBrushSize(Number(event.target.value))}
+              disabled={!segmentationReady}
+            />
+            <span>{brushSize}</span>
+          </label>
+          <button
+            className="annotation-tool-btn"
+            disabled={!segmentationReady}
+            onClick={undoVoxelEdit}
+            title="Undo voxel"
+          >
+            ↶
+          </button>
+          <button
+            className="annotation-tool-btn"
+            disabled={!segmentationReady}
+            onClick={redoVoxelEdit}
+            title="Redo voxel"
+          >
+            ↷
+          </button>
+          <span className="mpr-segmentation-status">
+            {segmentationDirty ? '● unsaved' : '✓ saved'}
+          </span>
+          <span className="mpr-active-segment" title="Estructura voxel activa">
+            <span
+              className="mpr-segment-color"
+              style={{ backgroundColor: activeCtSinusesFeature.color }}
+            />
+            {activeCtSinusesFeature.label}
+          </span>
+          <button
+            className={`annotation-tool-btn ${activeSegmentLocked ? 'active' : ''}`}
+            disabled={!segmentationReady}
+            onClick={toggleActiveSegmentLock}
+            title={activeSegmentLocked ? 'Desbloquear segmento' : 'Bloquear segmento'}
+          >
+            {activeSegmentLocked ? '🔒' : '🔓'}
+          </button>
+          <button
+            className={`annotation-tool-btn ${activeSegmentVisible ? 'active' : ''}`}
+            disabled={!segmentationReady}
+            onClick={toggleActiveSegmentVisibility}
+            title={activeSegmentVisible ? 'Ocultar segmento' : 'Mostrar segmento'}
+          >
+            {activeSegmentVisible ? '◉' : '○'}
+          </button>
+          <button
+            className="annotation-tool-btn"
+            disabled={!segmentationReady || segmentationBusy}
+            onClick={() => void saveVoxelSegmentation()}
+            title="Guardar como nuevo DICOM SEG"
+          >
+            {segmentationBusy ? '…' : '💾 Nueva versión'}
+          </button>
+          <select
+            className="mpr-segmentation-select"
+            value={selectedSavedSegmentationId}
+            onChange={event => setSelectedSavedSegmentationId(event.target.value)}
+            disabled={segmentationBusy}
+            aria-label="Segmentaciones guardadas"
+          >
+            <option value="">Abrir segmentación guardada…</option>
+            {savedSegmentations.map(object => (
+              <option key={object.id} value={object.id}>
+                v{object.version} · {new Date(object.createdAt).toLocaleString()} · {object.createdBy || 'usuario'}
+                {object.status === 'superseded' ? ' · supersedida' : ''}
+              </option>
+            ))}
+          </select>
+          <button
+            className="annotation-tool-btn"
+            disabled={!selectedSavedSegmentationId || !segmentationReady || segmentationBusy}
+            onClick={() => void openSavedSegmentation()}
+            title="Reconstruir el Labelmap desde el DICOM SEG"
+          >
+            Abrir
+          </button>
+        </>
+      )}
+      {!voxelSegmentationEnabled && <span className="mpr-readonly-indicator">🔒 {t('viewer.spatialOnly')}</span>}
+      {segmentationError && <span className="mpr-segmentation-error">⚠ {segmentationError}</span>}
+      {segmentationOperationError && <span className="mpr-segmentation-error">⚠ {segmentationOperationError}</span>}
     </div>
   );
 
