@@ -106,6 +106,12 @@ export const AnnotationToolbar: React.FC<{
       >
         <IconInvert className="annotation-icon" />
       </button>
+
+      <div
+        id="mpr-annotation-toolbar-slot"
+        className="annotation-toolbar-mpr-slot"
+        aria-label="Controles MPR"
+      />
     </div>
   );
 };

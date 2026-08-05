@@ -2276,10 +2276,17 @@ select {
   display: flex;
   align-items: center;
   gap: 2px;
+  min-width: 0;
+  max-width: 100%;
   padding: 4px 8px;
   background-color: var(--surface-light);
   border-radius: 6px;
   border: 1px solid var(--border-color);
+  overflow-x: auto;
+}
+
+.annotation-toolbar-mpr-slot {
+  display: contents;
 }
 
 .annotation-icon-btn {

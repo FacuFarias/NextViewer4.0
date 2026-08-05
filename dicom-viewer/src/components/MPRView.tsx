@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useCallback, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   RenderingEngine,
   Enums,
@@ -474,6 +475,7 @@ const MPRView: React.FC<MPRViewProps> = ({
   const [activeSegmentLocked, setActiveSegmentLocked] = useState(false);
   const [activeSegmentVisible, setActiveSegmentVisible] = useState(true);
   const [surface3DStatus, setSurface3DStatus] = useState<'idle' | 'building' | 'ready'>('idle');
+  const [annotationToolbarHost, setAnnotationToolbarHost] = useState<HTMLElement | null>(null);
   const segmentationIdRef = useRef<string | null>(null);
   const interpolationTrackersRef = useRef<Map<number, SegmentInterpolationTracker>>(new Map());
   const interpolationInProgressRef = useRef(false);
@@ -482,6 +484,13 @@ const MPRView: React.FC<MPRViewProps> = ({
   const activeCtSinusesFeature = CT_SINUSES_FEATURES.find(feature =>
     feature.key === activeCtSinusesFeatureKey
   ) || CT_SINUSES_FEATURES[0];
+
+  useEffect(() => {
+    if (!embedded) return;
+    const host = document.getElementById('mpr-annotation-toolbar-slot');
+    setAnnotationToolbarHost(host);
+    return () => setAnnotationToolbarHost(null);
+  }, [embedded]);
 
   const handleDoubleClick = useCallback((viewportId: ViewportId) => {
     focusedViewportRef.current = viewportId;
@@ -1723,7 +1732,8 @@ const MPRView: React.FC<MPRViewProps> = ({
     </>
   );
 
-  const renderAnnotationToolbar = () => (
+  const renderAnnotationToolbar = () => {
+    const toolbar = (
     <div className="mpr-annotation-toolbar">
       <button
         className={`annotation-tool-btn ${activeTool === 'WindowLevel' ? 'active' : ''}`}
@@ -1893,7 +1903,15 @@ const MPRView: React.FC<MPRViewProps> = ({
       {segmentationError && <span className="mpr-segmentation-error">⚠ {segmentationError}</span>}
       {segmentationOperationError && <span className="mpr-segmentation-error">⚠ {segmentationOperationError}</span>}
     </div>
-  );
+    );
+
+    if (annotationToolbarHost) {
+      return createPortal(toolbar, annotationToolbarHost);
+    }
+    // The standalone MPR route has no global viewer header. Keep its local
+    // toolbar in that context; embedded MPR uses the global AnnotationToolbar.
+    return embedded ? null : toolbar;
+  };
 
   if (embedded) {
     return (
