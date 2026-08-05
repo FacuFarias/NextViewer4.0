@@ -988,20 +988,12 @@ const MPRView: React.FC<MPRViewProps> = ({
         const segmentation = cornerstoneTools.segmentation.state.getSegmentation(segmentationId) as any;
         let surfaceData = segmentation?.representationData?.Surface;
 
-        // Compute first and register the viewport representation afterwards.
-        // This prevents SurfaceDisplay from launching duplicate conversions
-        // while React and the resize observer render the newly visible panel.
-        if (!surfaceData?.geometryIds?.size) {
-          surfaceData = await polySeg.computeSurfaceData(segmentationId, { viewport });
-          const hasRenderableGeometry = Array.from(surfaceData?.geometryIds?.values?.() || [])
-            .some((geometryId: unknown) => {
-              if (typeof geometryId !== 'string') return false;
-              const surface = (cache.getGeometry(geometryId) as any)?.data;
-              return surface?.points?.length >= 9 && surface?.polys?.length >= 4;
-            });
-          if (!hasRenderableGeometry) {
-            throw new Error('No se generó una superficie. Pinta una región más amplia en uno o más cortes.');
-          }
+        // Surface conversion reads its color from the target viewport. Add an
+        // empty data holder first, then register the colored representation.
+        // SurfaceDisplay sees the holder and therefore does not start a second
+        // concurrent conversion while PolySeg is building the actual mesh.
+        if (!surfaceData) {
+          surfaceData = { geometryIds: new Map<number, string>() };
           cornerstoneTools.segmentation.addRepresentationData({
             segmentationId,
             type: cornerstoneTools.Enums.SegmentationRepresentations.Surface,
@@ -1033,6 +1025,20 @@ const MPRView: React.FC<MPRViewProps> = ({
                 : undefined,
             }]
           );
+        }
+
+        if (!surfaceData.geometryIds?.size) {
+          const computedSurfaceData = await polySeg.computeSurfaceData(segmentationId, { viewport });
+          const hasRenderableGeometry = Array.from(computedSurfaceData?.geometryIds?.values?.() || [])
+            .some((geometryId: unknown) => {
+              if (typeof geometryId !== 'string') return false;
+              const surface = (cache.getGeometry(geometryId) as any)?.data;
+              return surface?.points?.length >= 9 && surface?.polys?.length >= 4;
+            });
+          if (!hasRenderableGeometry) {
+            throw new Error('No se generó una superficie. Pinta una región más amplia en uno o más cortes.');
+          }
+          surfaceData.geometryIds = computedSurfaceData.geometryIds;
         }
 
         cornerstoneTools.segmentation.triggerSegmentationEvents.triggerSegmentationModified(
