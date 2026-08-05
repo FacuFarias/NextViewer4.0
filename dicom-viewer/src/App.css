@@ -2197,6 +2197,7 @@ select {
 .mpr-segmentation-error {
   display: inline-flex;
   align-items: center;
+  flex-shrink: 0;
   padding: 4px 6px;
   font-size: 0.7rem;
   white-space: nowrap;

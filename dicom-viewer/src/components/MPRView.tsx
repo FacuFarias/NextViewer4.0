@@ -1066,6 +1066,9 @@ const MPRView: React.FC<MPRViewProps> = ({
           axis: tracker.axis,
           anchorSlices: tracker.anchors,
           previousGeneratedOffsets: tracker.generatedOffsets,
+          setVoxelValue: (offset, value) => {
+            labelmap.volume.voxelManager.setAtIndex(offset, value);
+          },
         });
         tracker.generatedOffsets = result.generatedOffsets;
 

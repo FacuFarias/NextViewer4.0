@@ -386,6 +386,7 @@ export async function importMinicatDICOMSEG(
       scalarData[destinationOffset + pixelIndex] = pixelData[pixelIndex] || 0;
     }
   }
+  segmentationVolume.voxelManager.setCompleteScalarDataArray?.(scalarData);
   segmentationVolume.modified();
   cornerstoneTools.segmentation.triggerSegmentationEvents.triggerSegmentationDataModified(
     segmentationId,

@@ -8,6 +8,7 @@ export interface LabelmapInterpolationRequest {
   axis: LabelmapInterpolationAxis;
   anchorSlices: Iterable<number>;
   previousGeneratedOffsets?: ReadonlySet<number>;
+  setVoxelValue?: (offset: number, value: number) => void;
 }
 
 export interface LabelmapInterpolationResult {
@@ -229,6 +230,7 @@ export function interpolateLabelmapSegment(
     segmentIndex,
     axis,
     previousGeneratedOffsets = new Set<number>(),
+    setVoxelValue,
   } = request;
   const maxSlice = dimensions[axis] - 1;
   const anchors = Array.from(new Set(Array.from(request.anchorSlices)))
@@ -304,6 +306,7 @@ export function interpolateLabelmapSegment(
 
     if (scalarData[offset] === segmentIndex) {
       scalarData[offset] = 0;
+      setVoxelValue?.(offset, 0);
       changedVoxelCount += 1;
       modifiedNativeSlices.add(getNativeSliceFromOffset(offset, dimensions));
     }
@@ -315,6 +318,7 @@ export function interpolateLabelmapSegment(
 
     if (currentValue === 0) {
       scalarData[offset] = segmentIndex;
+      setVoxelValue?.(offset, segmentIndex);
       changedVoxelCount += 1;
       modifiedNativeSlices.add(getNativeSliceFromOffset(offset, dimensions));
       generatedOffsets.add(offset);
