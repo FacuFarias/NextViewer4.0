@@ -15,11 +15,14 @@ export default defineConfig({
     include: ['dicom-parser'],
   },
   resolve: {
-    alias: {
-      '@icr/polyseg-wasm': fileURLToPath(
-        new URL('./src/services/polySegWasmStub.ts', import.meta.url)
-      ),
-    },
+    alias: [
+      {
+        find: /^@icr\/polyseg-wasm$/,
+        replacement: fileURLToPath(
+          new URL('./src/services/polySegWasm.ts', import.meta.url)
+        ),
+      },
+    ],
   },
   worker: {
     format: 'es',

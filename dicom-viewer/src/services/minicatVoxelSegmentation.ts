@@ -316,11 +316,19 @@ export function serializeMinicatSegmentation(
   segmentation.dataset.SegmentationType = 'BINARY';
 
   const { DicomMetaDictionary, DicomDict } = dcmjsData as any;
-  const metaHeader = DicomMetaDictionary.createMetaHeader(segmentation.dataset, {
+  // dcmjs 0.43.1 does not expose createMetaHeader. Build the file-meta
+  // information using the same datasetToDict convention used internally by
+  // dcmjs so the generated object is a valid Part 10 DICOM file.
+  const metaHeader = DicomMetaDictionary.denaturalizeDataset({
+    MediaStorageSOPClassUID: segmentation.dataset.SOPClassUID,
+    MediaStorageSOPInstanceUID: segmentation.dataset.SOPInstanceUID,
+    ImplementationVersionName: 'dcmjs-0.0',
     TransferSyntaxUID: '1.2.840.10008.1.2.1',
+    ImplementationClassUID: '2.25.80302813137786398554742050926734630921603366648225212145404',
+    FileMetaInformationVersion: new Uint8Array([0, 1]).buffer,
   });
   const dicomDict = new DicomDict(metaHeader);
-  dicomDict.dict = segmentation.dataset;
+  dicomDict.dict = DicomMetaDictionary.denaturalizeDataset(segmentation.dataset);
   return dicomDict.write();
 }
 
