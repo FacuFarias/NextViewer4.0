@@ -526,6 +526,26 @@ const MPRView: React.FC<MPRViewProps> = ({
     viewport?.render?.();
   }, [maximizedViewport, showVolume3D]);
 
+  const toggleVolume3D = useCallback(() => {
+    if (showVolume3D) {
+      setShowVolume3D(false);
+      return;
+    }
+
+    const segmentationId = segmentationIdRef.current;
+    if (!segmentationReady || !segmentationId) return;
+
+    const { scalarData } = getMinicatLabelmapData(segmentationId);
+    const hasPaintedVoxels = scalarData.some(value => value !== 0);
+    if (!hasPaintedVoxels) {
+      setSegmentationOperationError('Pinta al menos un voxel antes de generar el volumen 3D.');
+      return;
+    }
+
+    setSegmentationOperationError(null);
+    setShowVolume3D(true);
+  }, [segmentationReady, showVolume3D]);
+
   const setActiveAnnotationTool = useCallback((toolName: string) => {
     if (!toolGroupRef.current) return;
 
@@ -899,46 +919,6 @@ const MPRView: React.FC<MPRViewProps> = ({
             viewportIds: MPR_VIEWPORT_IDS,
           });
           segmentationIdRef.current = segmentationId;
-          const axialLabelmapRepresentation = cornerstoneTools.segmentation.state.getSegmentationRepresentation(
-            AXIAL_VIEWPORT_ID,
-            {
-              segmentationId,
-              type: cornerstoneTools.Enums.SegmentationRepresentations.Labelmap,
-            }
-          );
-          const surfaceRepresentationConfig = axialLabelmapRepresentation?.colorLUTIndex !== undefined
-            ? { colorLUTOrIndex: axialLabelmapRepresentation.colorLUTIndex }
-            : undefined;
-
-          // PolySeg 3.33.x updates one shared surface representation and
-          // enumerates every viewport that contains the segmentation. Keep a
-          // Surface representation in all viewports so the updater never
-          // receives an undefined representation. The MPR surface actors are
-          // hidden below; only the dedicated 3D viewport displays the mesh.
-          cornerstoneTools.segmentation.addSurfaceRepresentationToViewportMap(
-            Object.fromEntries(ALL_VIEWPORT_IDS.map(viewportId => [viewportId, [{
-              segmentationId,
-              config: surfaceRepresentationConfig,
-            }]]))
-          );
-
-          MPR_VIEWPORT_IDS.forEach(viewportId => {
-            const surfaceRepresentation = cornerstoneTools.segmentation.state.getSegmentationRepresentation(
-              viewportId,
-              {
-                segmentationId,
-                type: cornerstoneTools.Enums.SegmentationRepresentations.Surface,
-              }
-            ) as any;
-            // Set the representation state before the first render. This
-            // prevents empty MPR meshes from appearing while still keeping
-            // the representation available to PolySeg's shared updater.
-            if (surfaceRepresentation?.segments) {
-              Object.values(surfaceRepresentation.segments).forEach((segment: any) => {
-                segment.visible = false;
-              });
-            }
-          });
           setActiveMinicatSegment(segmentationId, CT_SINUSES_FEATURES[0]);
           cornerstoneTools.utilities.segmentation.setBrushSizeForToolGroup(
             TOOL_GROUP_ID,
@@ -988,40 +968,47 @@ const MPRView: React.FC<MPRViewProps> = ({
   }, [onVoxelSegmentationDirty, segmentationReady]);
 
   useEffect(() => {
-    if (!segmentationReady) return;
+    if (!showVolume3D || !segmentationReady) return;
     const segmentationId = segmentationIdRef.current;
-    const segmentationRenderedEvent = (cornerstoneTools.Enums.Events as any).SEGMENTATION_RENDERED;
-    if (!segmentationId || !segmentationRenderedEvent) return;
+    if (!segmentationId) return;
 
-    const hideMprSurfaceActors = (event: any) => {
-      const detail = event.detail;
-      if (
-        detail?.segmentationId !== segmentationId ||
-        detail?.type !== cornerstoneTools.Enums.SegmentationRepresentations.Surface ||
-        !MPR_VIEWPORT_IDS.includes(detail.viewportId)
-      ) {
-        return;
+    // Wait until the CSS layout has exposed and resized the 3D viewport before
+    // asking PolySeg to build the mesh. This also avoids computing an empty
+    // surface while the user is still painting the first voxels.
+    const timer = window.setTimeout(() => {
+      const existingSurface = cornerstoneTools.segmentation.state.getSegmentationRepresentation(
+        VOLUME_3D_VIEWPORT_ID,
+        {
+          segmentationId,
+          type: cornerstoneTools.Enums.SegmentationRepresentations.Surface,
+        }
+      );
+      if (!existingSurface) {
+        const axialLabelmapRepresentation = cornerstoneTools.segmentation.state.getSegmentationRepresentation(
+          AXIAL_VIEWPORT_ID,
+          {
+            segmentationId,
+            type: cornerstoneTools.Enums.SegmentationRepresentations.Labelmap,
+          }
+        );
+        cornerstoneTools.segmentation.addSurfaceRepresentationToViewport(
+          VOLUME_3D_VIEWPORT_ID,
+          [{
+            segmentationId,
+            config: axialLabelmapRepresentation?.colorLUTIndex !== undefined
+              ? { colorLUTOrIndex: axialLabelmapRepresentation.colorLUTIndex }
+              : undefined,
+          }]
+        );
       }
 
-      const viewport = renderingEngineRef.current?.getViewport(detail.viewportId) as any;
-      const actors = viewport?.getActors?.() || [];
-      let changed = false;
-      actors
-        .filter((entry: any) => entry.representationUID?.startsWith(`${segmentationId}-Surface-`))
-        .forEach((entry: any) => {
-          const actor = entry.actor;
-          if (actor?.getVisibility?.() !== false) {
-            actor?.setVisibility?.(false);
-            changed = true;
-          }
-        });
+      const renderingEngine = renderingEngineRef.current;
+      renderingEngine?.resize(false, true);
+      renderingEngine?.renderViewport(VOLUME_3D_VIEWPORT_ID);
+    }, 180);
 
-      if (changed) viewport.render();
-    };
-
-    eventTarget.addEventListener(segmentationRenderedEvent, hideMprSurfaceActors);
-    return () => eventTarget.removeEventListener(segmentationRenderedEvent, hideMprSurfaceActors);
-  }, [segmentationReady]);
+    return () => window.clearTimeout(timer);
+  }, [segmentationReady, showVolume3D]);
 
   const setMprCrosshairCenter = useCallback((
     worldPoint: number[],
@@ -1320,7 +1307,7 @@ const MPRView: React.FC<MPRViewProps> = ({
         <button
           className={`annotation-tool-btn ${showVolume3D ? 'active' : ''}`}
           disabled={isLoading || !segmentationReady}
-          onClick={() => setShowVolume3D(current => !current)}
+          onClick={toggleVolume3D}
           title={showVolume3D ? 'Volver a MPR' : 'Mostrar bloque 3D de la segmentación'}
         >
           {showVolume3D ? '▣ MPR' : '▣ 3D'}
