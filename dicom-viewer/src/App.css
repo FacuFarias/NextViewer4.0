@@ -2193,6 +2193,7 @@ select {
 }
 
 .mpr-segmentation-status,
+.mpr-interpolation-status,
 .mpr-segmentation-error {
   display: inline-flex;
   align-items: center;
@@ -2203,6 +2204,13 @@ select {
 
 .mpr-segmentation-status {
   color: #9ccc65;
+}
+
+.mpr-interpolation-status {
+  color: #64b5f6;
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .mpr-segmentation-error {

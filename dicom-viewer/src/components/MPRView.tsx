@@ -7,6 +7,7 @@ import {
   cache,
   setVolumesForViewports,
   eventTarget,
+  utilities as csUtils,
 } from '@cornerstonejs/core';
 import * as cornerstoneTools from '@cornerstonejs/tools';
 import * as polySeg from '@cornerstonejs/polymorphic-segmentation';
@@ -29,6 +30,10 @@ import {
 } from '../services/minicatVoxelSegmentation';
 import { segmentationObjectService } from '../services/segmentationObjects';
 import { SegmentationObject } from '../types/segmentationObjects';
+import {
+  interpolateLabelmapSegment,
+  LabelmapInterpolationAxis,
+} from '../services/labelmapInterpolation';
 
 interface MPRViewProps {
   studyInstanceUID: string;
@@ -50,6 +55,13 @@ const TOOL_GROUP_ID = 'mpr-tool-group';
 const VOLUME_3D_TOOL_GROUP_ID = 'mpr-volume-3d-tool-group';
 
 type ViewportId = 'axial' | 'sagittal' | 'coronal';
+
+interface SegmentInterpolationTracker {
+  axis: LabelmapInterpolationAxis;
+  plane: ViewportId;
+  anchors: Set<number>;
+  generatedOffsets: Set<number>;
+}
 
 const VIEWPORT_CONFIG: Record<ViewportId, {
   id: string;
@@ -449,6 +461,9 @@ const MPRView: React.FC<MPRViewProps> = ({
   const [showVolume3D, setShowVolume3D] = useState(false);
   const [activeTool, setActiveTool] = useState<string>('WindowLevel');
   const [brushSize, setBrushSize] = useState(25);
+  const [autoInterpolationEnabled, setAutoInterpolationEnabled] = useState(true);
+  const [interpolationBusy, setInterpolationBusy] = useState(false);
+  const [interpolationStatus, setInterpolationStatus] = useState<string | null>(null);
   const [segmentationReady, setSegmentationReady] = useState(false);
   const [segmentationError, setSegmentationError] = useState<string | null>(null);
   const [segmentationDirty, setSegmentationDirty] = useState(false);
@@ -460,6 +475,8 @@ const MPRView: React.FC<MPRViewProps> = ({
   const [activeSegmentVisible, setActiveSegmentVisible] = useState(true);
   const [surface3DStatus, setSurface3DStatus] = useState<'idle' | 'building' | 'ready'>('idle');
   const segmentationIdRef = useRef<string | null>(null);
+  const interpolationTrackersRef = useRef<Map<number, SegmentInterpolationTracker>>(new Map());
+  const interpolationInProgressRef = useRef(false);
   const volumeId = getMprVolumeId(studyInstanceUID, series.seriesInstanceUID);
 
   const activeCtSinusesFeature = CT_SINUSES_FEATURES.find(feature =>
@@ -734,6 +751,8 @@ const MPRView: React.FC<MPRViewProps> = ({
         selected.segmentationSOPInstanceUID
       );
       await importMinicatDICOMSEG(segmentationId, volumeId, sourceImageIdsRef.current, dicomBuffer);
+      interpolationTrackersRef.current.clear();
+      setInterpolationStatus(null);
       setSegmentationDirty(false);
       onVoxelSegmentationDirty?.(false);
     } catch (error) {
@@ -938,6 +957,8 @@ const MPRView: React.FC<MPRViewProps> = ({
             viewportIds: MPR_VIEWPORT_IDS,
           });
           segmentationIdRef.current = segmentationId;
+          interpolationTrackersRef.current.clear();
+          setInterpolationStatus(null);
           setActiveMinicatSegment(segmentationId, CT_SINUSES_FEATURES[0]);
           cornerstoneTools.utilities.segmentation.setBrushSizeForToolGroup(
             TOOL_GROUP_ID,
@@ -985,6 +1006,171 @@ const MPRView: React.FC<MPRViewProps> = ({
     eventTarget.addEventListener(segmentationEvent, handleSegmentationModified);
     return () => eventTarget.removeEventListener(segmentationEvent, handleSegmentationModified);
   }, [onVoxelSegmentationDirty, segmentationReady]);
+
+  useEffect(() => {
+    if (!segmentationReady || !autoInterpolationEnabled) return;
+    const segmentationEvent = (cornerstoneTools.Enums.Events as any).SEGMENTATION_DATA_MODIFIED;
+    if (!segmentationEvent) return;
+
+    const pendingTimers = new Map<number, number>();
+
+    const getInterpolationPlane = (): {
+      axis: LabelmapInterpolationAxis;
+      plane: ViewportId;
+      slice: number;
+      alignment: number;
+    } | null => {
+      const segmentationId = segmentationIdRef.current;
+      if (!segmentationId) return null;
+      const plane = focusedViewportRef.current;
+      const viewport = renderingEngineRef.current?.getViewport(
+        VIEWPORT_CONFIG[plane].id
+      ) as any;
+      const labelmap = getMinicatLabelmapData(segmentationId);
+      const imageData = labelmap.volume?.imageData;
+      const camera = viewport?.getCamera?.();
+      if (!imageData || !camera?.focalPoint) return null;
+
+      const { ijkVecSliceDir } = csUtils.getVolumeDirectionVectors(imageData, camera);
+      const absoluteDirection = Array.from(ijkVecSliceDir, value => Math.abs(Number(value)));
+      const axis = absoluteDirection.indexOf(Math.max(...absoluteDirection)) as LabelmapInterpolationAxis;
+      const alignment = absoluteDirection[axis];
+      // Automatic interpolation is safe for the standard orthogonal MPR
+      // planes. An oblique plane would require resampling on a non-IJK grid.
+      if (!Number.isFinite(alignment) || alignment < 0.98) return null;
+
+      const focalIndex = csUtils.transformWorldToIndexContinuous(
+        imageData,
+        camera.focalPoint
+      );
+      const slice = Math.max(
+        0,
+        Math.min(labelmap.dimensions[axis] - 1, Math.round(focalIndex[axis]))
+      );
+      return { axis, plane, slice, alignment };
+    };
+
+    const interpolateSegment = (segmentIndex: number) => {
+      const segmentationId = segmentationIdRef.current;
+      const tracker = interpolationTrackersRef.current.get(segmentIndex);
+      if (!segmentationId || !tracker) return;
+
+      try {
+        setInterpolationBusy(true);
+        const labelmap = getMinicatLabelmapData(segmentationId);
+        const result = interpolateLabelmapSegment({
+          scalarData: labelmap.scalarData,
+          dimensions: labelmap.dimensions,
+          spacing: labelmap.spacing,
+          segmentIndex,
+          axis: tracker.axis,
+          anchorSlices: tracker.anchors,
+          previousGeneratedOffsets: tracker.generatedOffsets,
+        });
+        tracker.generatedOffsets = result.generatedOffsets;
+
+        const planeLabel = VIEWPORT_CONFIG[tracker.plane].label;
+        const anchorCount = tracker.anchors.size;
+        if (anchorCount < 2) {
+          setInterpolationStatus(`${planeLabel}: 1 corte ancla`);
+        } else if (result.anchorPairCount === 0) {
+          setInterpolationStatus(`${planeLabel}: sin espacio para interpolar`);
+        } else {
+          setInterpolationStatus(
+            `${planeLabel}: ${result.interpolatedSliceCount} cortes interpolados`
+          );
+        }
+
+        console.info('[MPR][Interpolation] completed', {
+          segmentationId,
+          segmentIndex,
+          plane: tracker.plane,
+          volumeAxis: tracker.axis,
+          anchors: Array.from(tracker.anchors).sort((left, right) => left - right),
+          ...result,
+          generatedOffsets: result.generatedOffsets.size,
+        });
+
+        if (result.changedVoxelCount === 0) return;
+        labelmap.volume.modified();
+        interpolationInProgressRef.current = true;
+        try {
+          cornerstoneTools.segmentation.triggerSegmentationEvents
+            .triggerSegmentationDataModified(
+              segmentationId,
+              result.modifiedNativeSlices,
+              segmentIndex
+            );
+        } finally {
+          interpolationInProgressRef.current = false;
+        }
+        renderingEngineRef.current?.renderViewports(MPR_VIEWPORT_IDS);
+      } catch (error) {
+        console.error('[MPR][Interpolation] failed', error);
+        setInterpolationStatus('Error de interpolación');
+        setSegmentationOperationError(
+          error instanceof Error ? error.message : 'No se pudo interpolar la segmentación'
+        );
+      } finally {
+        setInterpolationBusy(false);
+      }
+    };
+
+    const handleSegmentationModified = (event: any) => {
+      if (interpolationInProgressRef.current) return;
+      if (event.detail?.segmentationId !== segmentationIdRef.current) return;
+      if (activeTool !== 'Brush' && activeTool !== 'Eraser') return;
+
+      const segmentIndex = Number(event.detail?.segmentIndex);
+      if (!Number.isInteger(segmentIndex) || segmentIndex <= 0) return;
+      const interpolationPlane = getInterpolationPlane();
+      if (!interpolationPlane) {
+        console.warn('[MPR][Interpolation] skipped non-orthogonal or unavailable plane');
+        setInterpolationStatus('Vista oblicua: interpolación omitida');
+        return;
+      }
+
+      let tracker = interpolationTrackersRef.current.get(segmentIndex);
+      if (!tracker || tracker.axis !== interpolationPlane.axis) {
+        // Changing editing plane starts a new sequence of anchors. Previously
+        // generated voxels stay in the Labelmap and are treated as baseline;
+        // this prevents a plane switch from erasing valid work.
+        tracker = {
+          axis: interpolationPlane.axis,
+          plane: interpolationPlane.plane,
+          anchors: new Set<number>(),
+          generatedOffsets: new Set<number>(),
+        };
+        interpolationTrackersRef.current.set(segmentIndex, tracker);
+      }
+      tracker.plane = interpolationPlane.plane;
+      tracker.anchors.add(interpolationPlane.slice);
+
+      console.info('[MPR][Interpolation] anchor registered', {
+        segmentIndex,
+        plane: interpolationPlane.plane,
+        volumeAxis: interpolationPlane.axis,
+        slice: interpolationPlane.slice,
+        alignment: interpolationPlane.alignment,
+        anchors: Array.from(tracker.anchors).sort((left, right) => left - right),
+        cornerstoneModifiedNativeSlices: event.detail?.modifiedSlicesToUse,
+      });
+
+      const previousTimer = pendingTimers.get(segmentIndex);
+      if (previousTimer !== undefined) window.clearTimeout(previousTimer);
+      pendingTimers.set(segmentIndex, window.setTimeout(() => {
+        pendingTimers.delete(segmentIndex);
+        interpolateSegment(segmentIndex);
+      }, 300));
+    };
+
+    eventTarget.addEventListener(segmentationEvent, handleSegmentationModified);
+    return () => {
+      eventTarget.removeEventListener(segmentationEvent, handleSegmentationModified);
+      pendingTimers.forEach(timer => window.clearTimeout(timer));
+      pendingTimers.clear();
+    };
+  }, [activeTool, autoInterpolationEnabled, segmentationReady]);
 
   useEffect(() => {
     if (!showVolume3D || !segmentationReady) return;
@@ -1440,6 +1626,7 @@ const MPRView: React.FC<MPRViewProps> = ({
     // Let the native stack render and receive user navigation first. MPR is a
     // background enhancement and must not compete with the first native image
     // when a preloaded study is opened.
+    const interpolationTrackers = interpolationTrackersRef.current;
     const timer = window.setTimeout(() => {
       void initMPR();
     }, 500);
@@ -1452,6 +1639,10 @@ const MPRView: React.FC<MPRViewProps> = ({
       initializationGenerationRef.current += 1;
       setSegmentationReady(false);
       setSegmentationDirty(false);
+      interpolationTrackers.clear();
+      interpolationInProgressRef.current = false;
+      setInterpolationBusy(false);
+      setInterpolationStatus(null);
       destroyMinicatSegmentation(segmentationIdRef.current);
       segmentationIdRef.current = null;
       // MPR annotations are bound to the current volume rendering engine and
@@ -1605,6 +1796,17 @@ const MPRView: React.FC<MPRViewProps> = ({
             <span>{brushSize}</span>
           </label>
           <button
+            className={`annotation-tool-btn ${autoInterpolationEnabled ? 'active' : ''}`}
+            disabled={!segmentationReady || interpolationBusy}
+            onClick={() => {
+              setAutoInterpolationEnabled(enabled => !enabled);
+              setInterpolationStatus(null);
+            }}
+            title="Interpolar automáticamente entre cortes pintados en la vista activa"
+          >
+            {interpolationBusy ? '… Interp.' : '↕ Auto'}
+          </button>
+          <button
             className="annotation-tool-btn"
             disabled={!segmentationReady}
             onClick={undoVoxelEdit}
@@ -1623,6 +1825,11 @@ const MPRView: React.FC<MPRViewProps> = ({
           <span className="mpr-segmentation-status">
             {segmentationDirty ? '● unsaved' : '✓ saved'}
           </span>
+          {autoInterpolationEnabled && interpolationStatus && (
+            <span className="mpr-interpolation-status" title={interpolationStatus}>
+              {interpolationStatus}
+            </span>
+          )}
           <span className="mpr-active-segment" title="Estructura voxel activa">
             <span
               className="mpr-segment-color"
