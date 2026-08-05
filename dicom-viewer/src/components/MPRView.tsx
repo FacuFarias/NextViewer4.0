@@ -906,15 +906,39 @@ const MPRView: React.FC<MPRViewProps> = ({
               type: cornerstoneTools.Enums.SegmentationRepresentations.Labelmap,
             }
           );
-          cornerstoneTools.segmentation.addSurfaceRepresentationToViewport(
-            VOLUME_3D_VIEWPORT_ID,
-            [{
+          const surfaceRepresentationConfig = axialLabelmapRepresentation?.colorLUTIndex !== undefined
+            ? { colorLUTOrIndex: axialLabelmapRepresentation.colorLUTIndex }
+            : undefined;
+
+          // PolySeg 3.33.x updates one shared surface representation and
+          // enumerates every viewport that contains the segmentation. Keep a
+          // Surface representation in all viewports so the updater never
+          // receives an undefined representation. The MPR surface actors are
+          // hidden below; only the dedicated 3D viewport displays the mesh.
+          cornerstoneTools.segmentation.addSurfaceRepresentationToViewportMap(
+            Object.fromEntries(ALL_VIEWPORT_IDS.map(viewportId => [viewportId, [{
               segmentationId,
-              config: axialLabelmapRepresentation?.colorLUTIndex !== undefined
-                ? { colorLUTOrIndex: axialLabelmapRepresentation.colorLUTIndex }
-                : undefined,
-            }]
+              config: surfaceRepresentationConfig,
+            }]]))
           );
+
+          MPR_VIEWPORT_IDS.forEach(viewportId => {
+            const surfaceRepresentation = cornerstoneTools.segmentation.state.getSegmentationRepresentation(
+              viewportId,
+              {
+                segmentationId,
+                type: cornerstoneTools.Enums.SegmentationRepresentations.Surface,
+              }
+            ) as any;
+            // Set the representation state before the first render. This
+            // prevents empty MPR meshes from appearing while still keeping
+            // the representation available to PolySeg's shared updater.
+            if (surfaceRepresentation?.segments) {
+              Object.values(surfaceRepresentation.segments).forEach((segment: any) => {
+                segment.visible = false;
+              });
+            }
+          });
           setActiveMinicatSegment(segmentationId, CT_SINUSES_FEATURES[0]);
           cornerstoneTools.utilities.segmentation.setBrushSizeForToolGroup(
             TOOL_GROUP_ID,
@@ -962,6 +986,42 @@ const MPRView: React.FC<MPRViewProps> = ({
     eventTarget.addEventListener(segmentationEvent, handleSegmentationModified);
     return () => eventTarget.removeEventListener(segmentationEvent, handleSegmentationModified);
   }, [onVoxelSegmentationDirty, segmentationReady]);
+
+  useEffect(() => {
+    if (!segmentationReady) return;
+    const segmentationId = segmentationIdRef.current;
+    const segmentationRenderedEvent = (cornerstoneTools.Enums.Events as any).SEGMENTATION_RENDERED;
+    if (!segmentationId || !segmentationRenderedEvent) return;
+
+    const hideMprSurfaceActors = (event: any) => {
+      const detail = event.detail;
+      if (
+        detail?.segmentationId !== segmentationId ||
+        detail?.type !== cornerstoneTools.Enums.SegmentationRepresentations.Surface ||
+        !MPR_VIEWPORT_IDS.includes(detail.viewportId)
+      ) {
+        return;
+      }
+
+      const viewport = renderingEngineRef.current?.getViewport(detail.viewportId) as any;
+      const actors = viewport?.getActors?.() || [];
+      let changed = false;
+      actors
+        .filter((entry: any) => entry.representationUID?.startsWith(`${segmentationId}-Surface-`))
+        .forEach((entry: any) => {
+          const actor = entry.actor;
+          if (actor?.getVisibility?.() !== false) {
+            actor?.setVisibility?.(false);
+            changed = true;
+          }
+        });
+
+      if (changed) viewport.render();
+    };
+
+    eventTarget.addEventListener(segmentationRenderedEvent, hideMprSurfaceActors);
+    return () => eventTarget.removeEventListener(segmentationRenderedEvent, hideMprSurfaceActors);
+  }, [segmentationReady]);
 
   const setMprCrosshairCenter = useCallback((
     worldPoint: number[],
