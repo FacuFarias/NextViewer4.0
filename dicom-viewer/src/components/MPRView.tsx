@@ -1027,6 +1027,15 @@ const MPRView: React.FC<MPRViewProps> = ({
           );
         }
 
+        // addSurfaceRepresentationToViewport clones the segmentation state.
+        // Re-read the holder so the computed geometry is attached to the
+        // current state rather than to the pre-clone object kept above.
+        surfaceData = (cornerstoneTools.segmentation.state.getSegmentation(segmentationId) as any)
+          ?.representationData?.Surface;
+        if (!surfaceData) {
+          throw new Error('No se pudo preparar la representación de superficie 3D');
+        }
+
         if (!surfaceData.geometryIds?.size) {
           const computedSurfaceData = await polySeg.computeSurfaceData(segmentationId, { viewport });
           const hasRenderableGeometry = Array.from(computedSurfaceData?.geometryIds?.values?.() || [])
@@ -1045,11 +1054,21 @@ const MPRView: React.FC<MPRViewProps> = ({
           segmentationId
         );
         window.setTimeout(() => {
+          const surfaceActors = (viewport.getActors?.() || []).filter((entry: any) =>
+            entry.representationUID?.startsWith(`${segmentationId}-Surface-`)
+          );
+          if (!surfaceActors.length) {
+            console.error('[MPR] 3D surface geometry exists but no surface actor was rendered');
+            setSurface3DStatus('idle');
+            setSegmentationOperationError('La geometría 3D se generó, pero Cornerstone no creó su actor visual.');
+            setShowVolume3D(false);
+            return;
+          }
           viewport.resetCamera?.();
           viewport.getRenderer?.().resetCameraClippingRange?.();
           viewport.render?.();
           setSurface3DStatus('ready');
-        }, 120);
+        }, 300);
       };
 
       void buildSurface().catch(error => {
