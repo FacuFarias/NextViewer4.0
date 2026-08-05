@@ -9,6 +9,7 @@ import {
   eventTarget,
 } from '@cornerstonejs/core';
 import * as cornerstoneTools from '@cornerstonejs/tools';
+import * as polySeg from '@cornerstonejs/polymorphic-segmentation';
 import { DicomInstance, DicomSeries } from '../types/dicom';
 import { dicomWebService, mergeDefinedDicomMetadata } from '../services/dicomWeb';
 import { localizeError, useTranslation } from '../i18n';
@@ -457,6 +458,7 @@ const MPRView: React.FC<MPRViewProps> = ({
   const [segmentationOperationError, setSegmentationOperationError] = useState<string | null>(null);
   const [activeSegmentLocked, setActiveSegmentLocked] = useState(false);
   const [activeSegmentVisible, setActiveSegmentVisible] = useState(true);
+  const [surface3DStatus, setSurface3DStatus] = useState<'idle' | 'building' | 'ready'>('idle');
   const segmentationIdRef = useRef<string | null>(null);
   const volumeId = getMprVolumeId(studyInstanceUID, series.seriesInstanceUID);
 
@@ -543,6 +545,7 @@ const MPRView: React.FC<MPRViewProps> = ({
     }
 
     setSegmentationOperationError(null);
+    setSurface3DStatus('building');
     setShowVolume3D(true);
   }, [segmentationReady, showVolume3D]);
 
@@ -976,39 +979,134 @@ const MPRView: React.FC<MPRViewProps> = ({
     // asking PolySeg to build the mesh. This also avoids computing an empty
     // surface while the user is still painting the first voxels.
     const timer = window.setTimeout(() => {
-      const existingSurface = cornerstoneTools.segmentation.state.getSegmentationRepresentation(
-        VOLUME_3D_VIEWPORT_ID,
-        {
-          segmentationId,
-          type: cornerstoneTools.Enums.SegmentationRepresentations.Surface,
+      const buildSurface = async () => {
+        const renderingEngine = renderingEngineRef.current;
+        renderingEngine?.resize(false, true);
+        const viewport = renderingEngine?.getViewport(VOLUME_3D_VIEWPORT_ID) as any;
+        if (!viewport) throw new Error('El viewport 3D no está disponible');
+
+        const segmentation = cornerstoneTools.segmentation.state.getSegmentation(segmentationId) as any;
+        let surfaceData = segmentation?.representationData?.Surface;
+
+        // Compute first and register the viewport representation afterwards.
+        // This prevents SurfaceDisplay from launching duplicate conversions
+        // while React and the resize observer render the newly visible panel.
+        if (!surfaceData?.geometryIds?.size) {
+          surfaceData = await polySeg.computeSurfaceData(segmentationId, { viewport });
+          const hasRenderableGeometry = Array.from(surfaceData?.geometryIds?.values?.() || [])
+            .some((geometryId: unknown) => {
+              if (typeof geometryId !== 'string') return false;
+              const surface = (cache.getGeometry(geometryId) as any)?.data;
+              return surface?.points?.length >= 9 && surface?.polys?.length >= 4;
+            });
+          if (!hasRenderableGeometry) {
+            throw new Error('No se generó una superficie. Pinta una región más amplia en uno o más cortes.');
+          }
+          cornerstoneTools.segmentation.addRepresentationData({
+            segmentationId,
+            type: cornerstoneTools.Enums.SegmentationRepresentations.Surface,
+            data: surfaceData,
+          });
         }
-      );
-      if (!existingSurface) {
-        const axialLabelmapRepresentation = cornerstoneTools.segmentation.state.getSegmentationRepresentation(
-          AXIAL_VIEWPORT_ID,
+
+        const existingSurface = cornerstoneTools.segmentation.state.getSegmentationRepresentation(
+          VOLUME_3D_VIEWPORT_ID,
           {
             segmentationId,
-            type: cornerstoneTools.Enums.SegmentationRepresentations.Labelmap,
+            type: cornerstoneTools.Enums.SegmentationRepresentations.Surface,
           }
         );
-        cornerstoneTools.segmentation.addSurfaceRepresentationToViewport(
-          VOLUME_3D_VIEWPORT_ID,
-          [{
-            segmentationId,
-            config: axialLabelmapRepresentation?.colorLUTIndex !== undefined
-              ? { colorLUTOrIndex: axialLabelmapRepresentation.colorLUTIndex }
-              : undefined,
-          }]
-        );
-      }
+        if (!existingSurface) {
+          const axialLabelmapRepresentation = cornerstoneTools.segmentation.state.getSegmentationRepresentation(
+            AXIAL_VIEWPORT_ID,
+            {
+              segmentationId,
+              type: cornerstoneTools.Enums.SegmentationRepresentations.Labelmap,
+            }
+          );
+          cornerstoneTools.segmentation.addSurfaceRepresentationToViewport(
+            VOLUME_3D_VIEWPORT_ID,
+            [{
+              segmentationId,
+              config: axialLabelmapRepresentation?.colorLUTIndex !== undefined
+                ? { colorLUTOrIndex: axialLabelmapRepresentation.colorLUTIndex }
+                : undefined,
+            }]
+          );
+        }
 
-      const renderingEngine = renderingEngineRef.current;
-      renderingEngine?.resize(false, true);
-      renderingEngine?.renderViewport(VOLUME_3D_VIEWPORT_ID);
+        cornerstoneTools.segmentation.triggerSegmentationEvents.triggerSegmentationModified(
+          segmentationId
+        );
+        window.setTimeout(() => {
+          viewport.resetCamera?.();
+          viewport.getRenderer?.().resetCameraClippingRange?.();
+          viewport.render?.();
+          setSurface3DStatus('ready');
+        }, 120);
+      };
+
+      void buildSurface().catch(error => {
+        console.error('[MPR] failed to build 3D segmentation surface', error);
+        setSurface3DStatus('idle');
+        setSegmentationOperationError(
+          error instanceof Error ? error.message : 'No se pudo generar la superficie 3D'
+        );
+        setShowVolume3D(false);
+      });
     }, 180);
 
     return () => window.clearTimeout(timer);
   }, [segmentationReady, showVolume3D]);
+
+  useEffect(() => {
+    if (!segmentationReady) return;
+    const segmentationEvent = (cornerstoneTools.Enums.Events as any).SEGMENTATION_DATA_MODIFIED;
+    if (!segmentationEvent) return;
+
+    let timer: number | null = null;
+    let updateInFlight = false;
+    let updateQueued = false;
+
+    const updateSurface = async () => {
+      if (updateInFlight) {
+        updateQueued = true;
+        return;
+      }
+      updateInFlight = true;
+      try {
+        do {
+          updateQueued = false;
+          const segmentationId = segmentationIdRef.current;
+          const segmentation = segmentationId
+            ? cornerstoneTools.segmentation.state.getSegmentation(segmentationId) as any
+            : null;
+          if (!segmentationId || !segmentation?.representationData?.Surface) return;
+          await polySeg.updateSurfaceData(segmentationId);
+        } while (updateQueued);
+      } catch (error) {
+        console.error('[MPR] failed to update 3D segmentation surface', error);
+        setSegmentationOperationError('La máscara se editó, pero no se pudo actualizar su superficie 3D.');
+      } finally {
+        updateInFlight = false;
+      }
+    };
+
+    const handleSegmentationModified = (event: any) => {
+      if (event.detail?.segmentationId !== segmentationIdRef.current) return;
+      if (timer !== null) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        timer = null;
+        void updateSurface();
+      }, 350);
+    };
+
+    eventTarget.addEventListener(segmentationEvent, handleSegmentationModified);
+    return () => {
+      eventTarget.removeEventListener(segmentationEvent, handleSegmentationModified);
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [segmentationReady]);
 
   const setMprCrosshairCenter = useCallback((
     worldPoint: number[],
@@ -1445,7 +1543,9 @@ const MPRView: React.FC<MPRViewProps> = ({
         <div className={`mpr-grid ${maximizedViewport || showVolume3D ? 'single-viewport' : ''} ${showVolume3D ? 'volume-3d-active' : ''}`}>
           {renderViewports()}
           <div className={`mpr-viewport-container mpr-volume-3d-container ${showVolume3D ? 'active' : 'hidden'}`}>
-            <div className="mpr-viewport-label">Volumen 3D · segmentación</div>
+            <div className="mpr-viewport-label">
+              Volumen 3D · {surface3DStatus === 'building' ? 'generando…' : 'segmentación'}
+            </div>
             <div
               ref={volume3DViewportRef}
               className="mpr-viewport"
@@ -1497,7 +1597,9 @@ const MPRView: React.FC<MPRViewProps> = ({
       <div className={`mpr-grid ${maximizedViewport || showVolume3D ? 'single-viewport' : ''} ${showVolume3D ? 'volume-3d-active' : ''}`}>
         {renderViewports()}
         <div className={`mpr-viewport-container mpr-volume-3d-container ${showVolume3D ? 'active' : 'hidden'}`}>
-          <div className="mpr-viewport-label">Volumen 3D · segmentación</div>
+          <div className="mpr-viewport-label">
+            Volumen 3D · {surface3DStatus === 'building' ? 'generando…' : 'segmentación'}
+          </div>
           <div
             ref={volume3DViewportRef}
             className="mpr-viewport"
