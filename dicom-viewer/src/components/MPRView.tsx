@@ -911,6 +911,22 @@ const MPRView: React.FC<MPRViewProps> = ({
         [{ volumeId }],
         ALL_VIEWPORT_IDS
       );
+      const volume3DViewport = renderingEngine.getViewport(VOLUME_3D_VIEWPORT_ID) as any;
+      const sourceVolumeActorUIDs = (volume3DViewport?.getActors?.() || [])
+        .filter((entry: any) => entry.referencedId === volumeId)
+        .map((entry: any) => entry.uid);
+      if (sourceVolumeActorUIDs.length) {
+        volume3DViewport.removeActors(sourceVolumeActorUIDs);
+      }
+      console.info('[MPR][3D] source CT actors removed from surface-only viewport', {
+        volumeId,
+        removedActorUIDs: sourceVolumeActorUIDs,
+        remainingActors: volume3DViewport?.getActors?.().map((entry: any) => ({
+          uid: entry.uid,
+          referencedId: entry.referencedId,
+          representationUID: entry.representationUID,
+        })),
+      });
       if (generation !== initializationGenerationRef.current) return;
 
       if (voxelSegmentationEnabled) {
@@ -987,6 +1003,62 @@ const MPRView: React.FC<MPRViewProps> = ({
 
         const segmentation = cornerstoneTools.segmentation.state.getSegmentation(segmentationId) as any;
         let surfaceData = segmentation?.representationData?.Surface;
+        const labelmap = getMinicatLabelmapData(segmentationId);
+        const [dimX, dimY] = labelmap.dimensions;
+        const segmentVoxelSummary = new Map<number, {
+          segmentIndex: number;
+          label: string;
+          voxelCount: number;
+          minIJK: [number, number, number];
+          maxIJK: [number, number, number];
+        }>();
+        for (let offset = 0; offset < labelmap.scalarData.length; offset += 1) {
+          const segmentIndex = labelmap.scalarData[offset];
+          if (!segmentIndex) continue;
+          const i = offset % dimX;
+          const j = Math.floor(offset / dimX) % dimY;
+          const k = Math.floor(offset / (dimX * dimY));
+          let summary = segmentVoxelSummary.get(segmentIndex);
+          if (!summary) {
+            summary = {
+              segmentIndex,
+              label: CT_SINUSES_FEATURES.find(feature => feature.segmentIndex === segmentIndex)?.label || 'Unknown',
+              voxelCount: 0,
+              minIJK: [i, j, k],
+              maxIJK: [i, j, k],
+            };
+            segmentVoxelSummary.set(segmentIndex, summary);
+          }
+          summary.voxelCount += 1;
+          summary.minIJK = [
+            Math.min(summary.minIJK[0], i),
+            Math.min(summary.minIJK[1], j),
+            Math.min(summary.minIJK[2], k),
+          ];
+          summary.maxIJK = [
+            Math.max(summary.maxIJK[0], i),
+            Math.max(summary.maxIJK[1], j),
+            Math.max(summary.maxIJK[2], k),
+          ];
+        }
+        console.info('[MPR][3D] voxel input', {
+          segmentationId,
+          dimensions: labelmap.dimensions,
+          spacing: labelmap.spacing,
+          origin: labelmap.origin,
+          direction: labelmap.direction,
+          nonZeroVoxelCount: Array.from(segmentVoxelSummary.values())
+            .reduce((total, item) => total + item.voxelCount, 0),
+          viewport: {
+            id: viewport.id,
+            type: viewport.type,
+            clientWidth: viewport.element?.clientWidth,
+            clientHeight: viewport.element?.clientHeight,
+            canvasWidth: viewport.canvas?.width,
+            canvasHeight: viewport.canvas?.height,
+          },
+        });
+        console.table(Array.from(segmentVoxelSummary.values()));
 
         // Surface conversion reads its color from the target viewport. Add an
         // empty data holder first, then register the colored representation.
@@ -1038,12 +1110,43 @@ const MPRView: React.FC<MPRViewProps> = ({
 
         if (!surfaceData.geometryIds?.size) {
           const computedSurfaceData = await polySeg.computeSurfaceData(segmentationId, { viewport });
-          const hasRenderableGeometry = Array.from(computedSurfaceData?.geometryIds?.values?.() || [])
-            .some((geometryId: unknown) => {
-              if (typeof geometryId !== 'string') return false;
+          const geometryDiagnostics = Array.from(computedSurfaceData?.geometryIds?.entries?.() || [])
+            .map((entry: unknown) => {
+              const [segmentIndex, geometryId] = entry as [number, string];
               const surface = (cache.getGeometry(geometryId) as any)?.data;
-              return surface?.points?.length >= 9 && surface?.polys?.length >= 4;
+              const points = surface?.points || [];
+              const bounds = [Infinity, -Infinity, Infinity, -Infinity, Infinity, -Infinity];
+              let finitePointCount = 0;
+              for (let index = 0; index + 2 < points.length; index += 3) {
+                const x = Number(points[index]);
+                const y = Number(points[index + 1]);
+                const z = Number(points[index + 2]);
+                if (![x, y, z].every(Number.isFinite)) continue;
+                finitePointCount += 1;
+                bounds[0] = Math.min(bounds[0], x);
+                bounds[1] = Math.max(bounds[1], x);
+                bounds[2] = Math.min(bounds[2], y);
+                bounds[3] = Math.max(bounds[3], y);
+                bounds[4] = Math.min(bounds[4], z);
+                bounds[5] = Math.max(bounds[5], z);
+              }
+              return {
+                segmentIndex,
+                geometryId,
+                pointCount: Math.floor(points.length / 3),
+                finitePointCount,
+                polysLength: surface?.polys?.length || 0,
+                bounds,
+                color: surface?.color,
+              };
             });
+          console.info('[MPR][3D] PolySeg geometry computed', {
+            geometryIds: Array.from(computedSurfaceData?.geometryIds?.entries?.() || []),
+            geometryDiagnostics,
+          });
+          console.table(geometryDiagnostics);
+          const hasRenderableGeometry = geometryDiagnostics
+            .some(item => item.finitePointCount >= 3 && item.polysLength >= 4);
           if (!hasRenderableGeometry) {
             throw new Error('No se generó una superficie. Pinta una región más amplia en uno o más cortes.');
           }
@@ -1057,6 +1160,37 @@ const MPRView: React.FC<MPRViewProps> = ({
           const surfaceActors = (viewport.getActors?.() || []).filter((entry: any) =>
             entry.representationUID?.startsWith(`${segmentationId}-Surface-`)
           );
+          const cameraBefore = viewport.getCamera?.();
+          const actorDiagnostics = surfaceActors.map((entry: any) => {
+            const property = entry.actor?.getProperty?.();
+            const mapperInput = entry.actor?.getMapper?.()?.getInputData?.();
+            entry.actor?.setVisibility?.(true);
+            property?.setOpacity?.(1);
+            property?.setAmbient?.(0.35);
+            property?.setDiffuse?.(0.65);
+            return {
+              uid: entry.uid,
+              representationUID: entry.representationUID,
+              visible: entry.actor?.getVisibility?.(),
+              bounds: entry.actor?.getBounds?.(),
+              color: property?.getColor?.(),
+              opacity: property?.getOpacity?.(),
+              mapperPointCount: mapperInput?.getPoints?.()?.getNumberOfPoints?.(),
+              mapperCellCount: mapperInput?.getNumberOfCells?.(),
+            };
+          });
+          console.info('[MPR][3D] render state before camera fit', {
+            actorDiagnostics,
+            camera: cameraBefore,
+            viewportActors: (viewport.getActors?.() || []).map((entry: any) => ({
+              uid: entry.uid,
+              referencedId: entry.referencedId,
+              representationUID: entry.representationUID,
+              visible: entry.actor?.getVisibility?.(),
+              bounds: entry.actor?.getBounds?.(),
+            })),
+          });
+          console.table(actorDiagnostics);
           if (!surfaceActors.length) {
             console.error('[MPR] 3D surface geometry exists but no surface actor was rendered');
             setSurface3DStatus('idle');
@@ -1067,6 +1201,10 @@ const MPRView: React.FC<MPRViewProps> = ({
           viewport.resetCamera?.();
           viewport.getRenderer?.().resetCameraClippingRange?.();
           viewport.render?.();
+          console.info('[MPR][3D] render state after camera fit', {
+            camera: viewport.getCamera?.(),
+            rendererBounds: viewport.getRenderer?.().computeVisiblePropBounds?.(),
+          });
           setSurface3DStatus('ready');
         }, 300);
       };
