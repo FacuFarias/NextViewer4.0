@@ -2093,6 +2093,27 @@ select {
   display: none;
 }
 
+.mpr-volume-3d-container.hidden {
+  display: block;
+  position: absolute;
+  left: -10000px;
+  top: -10000px;
+  width: 64px;
+  height: 64px;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.mpr-volume-3d-container.active {
+  position: relative;
+  left: auto;
+  top: auto;
+  width: auto;
+  height: auto;
+  visibility: visible;
+  pointer-events: auto;
+}
+
 .mpr-grid.volume-3d-active .mpr-volume-3d-container.active {
   grid-column: 1;
   grid-row: 1;
