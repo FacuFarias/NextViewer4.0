@@ -2090,7 +2090,14 @@ select {
 }
 
 .mpr-viewport-container.hidden {
-  display: none;
+  display: block;
+  position: absolute;
+  left: -10000px;
+  top: -10000px;
+  width: 64px;
+  height: 64px;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .mpr-volume-3d-container.hidden {
