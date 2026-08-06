@@ -740,9 +740,9 @@ const MPRView: React.FC<MPRViewProps> = ({
         actor,
         interactor,
         parentRenderer: renderer,
-        viewportSize: 0.18,
-        minPixelSize: 76,
-        maxPixelSize: 130,
+        viewportSize: 0.11,
+        minPixelSize: 52,
+        maxPixelSize: 90,
       });
       widget.setViewportCorner(vtkOrientationMarkerWidget.Corners.TOP_RIGHT);
       widget.setEnabled(true);
@@ -2437,6 +2437,10 @@ const MPRView: React.FC<MPRViewProps> = ({
       if (!engine) return;
 
       engine.resize(false, true);
+      // ContextPool updates its shared offscreen canvas during the first
+      // render. Compute the marker viewport afterwards; otherwise a marker
+      // initialized in the hidden 64x64 viewport keeps a full-canvas size.
+      engine.renderViewports(ALL_VIEWPORT_IDS);
       volume3DOrientationMarkerRef.current?.widget?.updateViewport?.();
       engine.renderViewports(ALL_VIEWPORT_IDS);
     });

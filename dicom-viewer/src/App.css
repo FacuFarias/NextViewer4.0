@@ -2164,10 +2164,10 @@ select {
 
 .mpr-3d-navigation {
   position: absolute;
-  top: 142px;
+  top: 102px;
   right: 8px;
   z-index: 25;
-  width: 116px;
+  width: 104px;
   padding: 5px 6px 6px;
   border: 1px solid rgba(142, 197, 255, 0.45);
   border-radius: 6px;
