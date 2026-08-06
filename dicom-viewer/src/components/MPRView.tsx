@@ -78,6 +78,13 @@ interface RegionGrowHistoryEntry {
   modifiedNativeSlices: number[];
 }
 
+interface RegionEraserCursor {
+  plane: ViewportId;
+  left: number;
+  top: number;
+  radius: number;
+}
+
 const VIEWPORT_CONFIG: Record<ViewportId, {
   id: string;
   label: string;
@@ -484,6 +491,7 @@ const MPRView: React.FC<MPRViewProps> = ({
   const [regionGrowConnectivity, setRegionGrowConnectivity] = useState<RegionGrowConnectivity>(6);
   const [regionGrowBusy, setRegionGrowBusy] = useState(false);
   const [regionGrowStatus, setRegionGrowStatus] = useState<string | null>(null);
+  const [regionEraserCursor, setRegionEraserCursor] = useState<RegionEraserCursor | null>(null);
   const [segmentationReady, setSegmentationReady] = useState(false);
   const [segmentationError, setSegmentationError] = useState<string | null>(null);
   const [segmentationDirty, setSegmentationDirty] = useState(false);
@@ -824,6 +832,64 @@ const MPRView: React.FC<MPRViewProps> = ({
         worldPoint
       ) as [number, number, number];
       const sourceScalarData = sourceVolume.voxelManager.getCompleteScalarDataArray();
+      let eraseSeedIJKs: Array<[number, number, number]> | undefined;
+      if (eraseMode) {
+        const centerIJK = csUtils.transformWorldToIndexContinuous(
+          labelmap.volume.imageData,
+          worldPoint
+        );
+        const camera = viewport.getCamera?.();
+        let sliceAxis: number = plane === 'axial' ? 2 : plane === 'sagittal' ? 0 : 1;
+        if (camera) {
+          const { ijkVecSliceDir } = csUtils.getVolumeDirectionVectors(
+            labelmap.volume.imageData,
+            camera
+          );
+          const absoluteDirection = Array.from(ijkVecSliceDir, value => Math.abs(Number(value)));
+          sliceAxis = absoluteDirection.indexOf(Math.max(...absoluteDirection));
+        }
+
+        const inPlaneAxes = [0, 1, 2].filter(axis => axis !== sliceAxis);
+        const [firstAxis, secondAxis] = inPlaneAxes;
+        const spacing = labelmap.spacing;
+        const radiusWorld = Math.max(0.5, brushSize);
+        const firstRadius = Math.ceil(radiusWorld / Math.max(Number(spacing[firstAxis]) || 0.001, 0.001));
+        const secondRadius = Math.ceil(radiusWorld / Math.max(Number(spacing[secondAxis]) || 0.001, 0.001));
+        const seeds = new Map<number, [number, number, number]>();
+
+        for (let firstOffset = -firstRadius; firstOffset <= firstRadius; firstOffset += 1) {
+          for (let secondOffset = -secondRadius; secondOffset <= secondRadius; secondOffset += 1) {
+            const distanceWorld = Math.sqrt(
+              (firstOffset * Number(spacing[firstAxis])) ** 2 +
+              (secondOffset * Number(spacing[secondAxis])) ** 2
+            );
+            if (distanceWorld > radiusWorld) continue;
+
+            const candidate: [number, number, number] = [
+              Math.round(centerIJK[0]),
+              Math.round(centerIJK[1]),
+              Math.round(centerIJK[2]),
+            ];
+            candidate[firstAxis] = Math.round(centerIJK[firstAxis] + firstOffset);
+            candidate[secondAxis] = Math.round(centerIJK[secondAxis] + secondOffset);
+            candidate[sliceAxis] = Math.round(centerIJK[sliceAxis]);
+            if (
+              candidate[0] < 0 || candidate[0] >= labelmap.dimensions[0] ||
+              candidate[1] < 0 || candidate[1] >= labelmap.dimensions[1] ||
+              candidate[2] < 0 || candidate[2] >= labelmap.dimensions[2]
+            ) continue;
+
+            const offset = candidate[0] + labelmap.dimensions[0] * (
+              candidate[1] + labelmap.dimensions[1] * candidate[2]
+            );
+            if (labelmap.scalarData[offset] === activeCtSinusesFeature.segmentIndex) {
+              seeds.set(offset, candidate);
+            }
+          }
+        }
+        eraseSeedIJKs = Array.from(seeds.values());
+      }
+
       const regionRequest = {
         sourceScalarData,
         labelmapScalarData: labelmap.scalarData,
@@ -833,6 +899,7 @@ const MPRView: React.FC<MPRViewProps> = ({
         toleranceHU: regionGrowTolerance,
         connectivity: regionGrowConnectivity,
         maxVoxels: 500_000,
+        ...(eraseSeedIJKs ? { seedIJKs: eraseSeedIJKs } : {}),
         setLabelValue: (offset: number, value: number) => {
           labelmap.volume.voxelManager.setAtIndex(offset, value);
         },
@@ -893,6 +960,7 @@ const MPRView: React.FC<MPRViewProps> = ({
     activeCtSinusesFeature,
     activeSegmentLocked,
     activeTool,
+    brushSize,
     regionGrowBusy,
     regionGrowConnectivity,
     regionGrowTolerance,
@@ -928,6 +996,55 @@ const MPRView: React.FC<MPRViewProps> = ({
       }
     }, REGION_GROW_CLICK_DELAY_MS);
   }, [activeTool, handleRegionGrow]);
+
+  const updateRegionEraserCursor = useCallback((
+    plane: ViewportId,
+    event: React.PointerEvent<HTMLDivElement>
+  ) => {
+    if (activeTool !== 'Eraser') return;
+
+    const rect = event.currentTarget.getBoundingClientRect();
+    const viewport = renderingEngineRef.current?.getViewport(VIEWPORT_CONFIG[plane].id) as any;
+    const canvas = viewport?.canvas;
+    const camera = viewport?.getCamera?.();
+    if (!canvas || !camera || rect.width <= 0 || rect.height <= 0) return;
+
+    const canvasPoint: [number, number] = [
+      (event.clientX - rect.left) * (canvas.width / rect.width),
+      (event.clientY - rect.top) * (canvas.height / rect.height),
+    ];
+    const worldPoint = viewport.canvasToWorld(canvasPoint) as [number, number, number];
+    const viewUp = camera.viewUp as [number, number, number];
+    const normal = camera.viewPlaneNormal as [number, number, number];
+    const right: [number, number, number] = [
+      viewUp[1] * normal[2] - viewUp[2] * normal[1],
+      viewUp[2] * normal[0] - viewUp[0] * normal[2],
+      viewUp[0] * normal[1] - viewUp[1] * normal[0],
+    ];
+    const rightLength = Math.sqrt(
+      right[0] ** 2 + right[1] ** 2 + right[2] ** 2
+    ) || 1;
+    const edgeWorld: [number, number, number] = [
+      worldPoint[0] + (right[0] / rightLength) * brushSize,
+      worldPoint[1] + (right[1] / rightLength) * brushSize,
+      worldPoint[2] + (right[2] / rightLength) * brushSize,
+    ];
+    const centerCanvas = viewport.worldToCanvas?.(worldPoint) as [number, number] | undefined;
+    const edgeCanvas = viewport.worldToCanvas?.(edgeWorld) as [number, number] | undefined;
+    if (!centerCanvas || !edgeCanvas) return;
+
+    const radiusCanvas = Math.sqrt(
+      (edgeCanvas[0] - centerCanvas[0]) ** 2 +
+      (edgeCanvas[1] - centerCanvas[1]) ** 2
+    );
+    const cssScale = canvas.width > 0 ? rect.width / canvas.width : 1;
+    setRegionEraserCursor({
+      plane,
+      left: event.clientX - rect.left,
+      top: event.clientY - rect.top,
+      radius: Math.max(4, radiusCanvas * cssScale),
+    });
+  }, [activeTool, brushSize]);
 
   useEffect(() => {
     if (!voxelSegmentationEnabled) {
@@ -2035,9 +2152,25 @@ const MPRView: React.FC<MPRViewProps> = ({
               onPointerDown={() => {
                 focusedViewportRef.current = plane;
               }}
+              onPointerMove={event => updateRegionEraserCursor(plane, event)}
+              onPointerLeave={() => {
+                setRegionEraserCursor(current => current?.plane === plane ? null : current);
+              }}
               onClick={event => handleMprClick(plane, event)}
               onDoubleClick={() => handleDoubleClick(plane)}
-            />
+            >
+              {activeTool === 'Eraser' && regionEraserCursor?.plane === plane && (
+                <div
+                  className="mpr-region-eraser-cursor"
+                  style={{
+                    left: `${regionEraserCursor.left}px`,
+                    top: `${regionEraserCursor.top}px`,
+                    width: `${regionEraserCursor.radius * 2}px`,
+                    height: `${regionEraserCursor.radius * 2}px`,
+                  }}
+                />
+              )}
+            </div>
           </div>
         );
       })}

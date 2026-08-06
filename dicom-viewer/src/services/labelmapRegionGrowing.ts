@@ -17,6 +17,7 @@ export interface LabelmapRegionEraseRequest {
   labelmapScalarData: Uint8Array;
   dimensions: [number, number, number];
   seedIJK: [number, number, number];
+  seedIJKs?: Array<[number, number, number]>;
   segmentIndex: number;
   toleranceHU: number;
   connectivity: RegionGrowConnectivity;
@@ -191,6 +192,7 @@ export function eraseLabelmapRegion(
     labelmapScalarData,
     dimensions,
     seedIJK,
+    seedIJKs,
     segmentIndex,
     toleranceHU,
     connectivity,
@@ -198,22 +200,27 @@ export function eraseLabelmapRegion(
     setLabelValue,
   } = request;
   const [width, height, depth] = dimensions;
-  const [seedI, seedJ, seedK] = seedIJK;
-  if (
-    seedI < 0 || seedI >= width ||
-    seedJ < 0 || seedJ >= height ||
-    seedK < 0 || seedK >= depth
-  ) {
-    throw new Error('La semilla está fuera del volumen CT');
+  const candidateSeeds = seedIJKs?.length ? seedIJKs : [seedIJK];
+  const validSeedOffsets: number[] = [];
+  for (const [seedI, seedJ, seedK] of candidateSeeds) {
+    if (
+      seedI < 0 || seedI >= width ||
+      seedJ < 0 || seedJ >= height ||
+      seedK < 0 || seedK >= depth
+    ) continue;
+    const offset = toOffset(dimensions, seedI, seedJ, seedK);
+    if (labelmapScalarData[offset] === segmentIndex) {
+      validSeedOffsets.push(offset);
+    }
+  }
+  if (!validSeedOffsets.length) {
+    throw new Error('Seleccioná un voxel perteneciente al segmento activo para borrarlo');
   }
 
-  const seedOffset = toOffset(dimensions, seedI, seedJ, seedK);
+  const seedOffset = validSeedOffsets[0];
   const seedValue = Number(sourceScalarData[seedOffset]);
   if (!Number.isFinite(seedValue)) {
     throw new Error('El voxel seleccionado no contiene un valor CT válido');
-  }
-  if (labelmapScalarData[seedOffset] !== segmentIndex) {
-    throw new Error('Seleccioná un voxel perteneciente al segmento activo para borrarlo');
   }
 
   const safeTolerance = Math.max(0, Number(toleranceHU) || 0);
@@ -231,9 +238,18 @@ export function eraseLabelmapRegion(
   let changedVoxelCount = 0;
   let stoppedByLimit = false;
 
-  visited[seedOffset] = 1;
-  queue[tail] = seedOffset;
-  tail += 1;
+  for (const offset of validSeedOffsets) {
+    if (visited[offset]) continue;
+    const value = Number(sourceScalarData[offset]);
+    if (!Number.isFinite(value) || value < lowerThreshold || value > upperThreshold) continue;
+    if (tail >= safeMaxVoxels) {
+      stoppedByLimit = true;
+      break;
+    }
+    visited[offset] = 1;
+    queue[tail] = offset;
+    tail += 1;
+  }
 
   while (head < tail) {
     const offset = queue[head];
