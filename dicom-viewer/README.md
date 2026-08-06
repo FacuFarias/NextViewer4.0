@@ -38,6 +38,7 @@ La rama `feature/minicat-voxel-segmentation` incorpora un flujo experimental de 
 - Undo/redo para Brush, Grow y Eraser
 - Visibilidad y bloqueo independiente de cada segmento
 - Reconstrucción de superficie 3D con orientación frontal inicial
+- Cubo anatómico sincronizado con la cámara y accesos a vistas `ANT/POST/IZQ/DER/SUP/INF`
 - El Grow se ejecuta exclusivamente desde MPR; la vista 3D permite inspección y Eraser
 - Las anotaciones poligonales 2D existentes permanecen disponibles y separadas del Labelmap
 

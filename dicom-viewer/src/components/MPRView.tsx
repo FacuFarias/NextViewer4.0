@@ -13,6 +13,8 @@ import {
 import * as cornerstoneTools from '@cornerstonejs/tools';
 import * as polySeg from '@cornerstonejs/polymorphic-segmentation';
 import vtkCellPicker from '@kitware/vtk.js/Rendering/Core/CellPicker';
+import vtkAnnotatedCubeActor from '@kitware/vtk.js/Rendering/Core/AnnotatedCubeActor';
+import vtkOrientationMarkerWidget from '@kitware/vtk.js/Interaction/Widgets/OrientationMarkerWidget';
 import { DicomInstance, DicomSeries } from '../types/dicom';
 import { dicomWebService, mergeDefinedDicomMetadata } from '../services/dicomWeb';
 import { localizeError, useTranslation } from '../i18n';
@@ -60,9 +62,11 @@ const CORONAL_VIEWPORT_ID = 'mpr-coronal';
 const VOLUME_3D_VIEWPORT_ID = 'mpr-volume-3d';
 const TOOL_GROUP_ID = 'mpr-tool-group';
 const VOLUME_3D_TOOL_GROUP_ID = 'mpr-volume-3d-tool-group';
+const VOLUME_3D_ORIENTATION_WIDGET_ID = 'mpr-volume-3d-orientation-cube';
 const REGION_GROW_CLICK_DELAY_MS = 250;
 
 type ViewportId = 'axial' | 'sagittal' | 'coronal';
+type Volume3DOrientation = 'front' | 'back' | 'left' | 'right' | 'superior' | 'inferior';
 
 interface SegmentInterpolationTracker {
   axis: LabelmapInterpolationAxis;
@@ -537,6 +541,10 @@ const MPRView: React.FC<MPRViewProps> = ({
   const renderingEngineRef = useRef<RenderingEngine | null>(null);
   const toolGroupRef = useRef<any>(null);
   const volume3DToolGroupRef = useRef<any>(null);
+  const volume3DOrientationMarkerRef = useRef<{
+    widget: any;
+    actor: any;
+  } | null>(null);
   const initializationGenerationRef = useRef(0);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -681,6 +689,98 @@ const MPRView: React.FC<MPRViewProps> = ({
     viewport?.resetCamera?.({ resetPan: true, resetZoom: true });
     viewport?.render?.();
   }, [maximizedViewport, showVolume3D]);
+
+  const destroyVolume3DOrientationMarker = useCallback(() => {
+    const marker = volume3DOrientationMarkerRef.current;
+    if (!marker) return;
+
+    try {
+      if (marker.widget?.getEnabled?.()) marker.widget.setEnabled(false);
+    } catch (error) {
+      console.warn('[MPR][3D] no se pudo liberar el cubo de orientación', error);
+    } finally {
+      // The Cornerstone viewport keeps its own widget reference until the
+      // rendering engine is destroyed. Disabling it is sufficient and avoids
+      // leaving a deleted VTK object in that internal widget map.
+      volume3DOrientationMarkerRef.current = null;
+    }
+  }, []);
+
+  const initializeVolume3DOrientationMarker = useCallback((renderingEngine: RenderingEngine) => {
+    destroyVolume3DOrientationMarker();
+
+    try {
+      const viewport = renderingEngine.getViewport(VOLUME_3D_VIEWPORT_ID) as any;
+      const renderer = viewport?.getRenderer?.();
+      const renderWindow = renderingEngine
+        .getOffscreenMultiRenderWindow(VOLUME_3D_VIEWPORT_ID)
+        ?.getRenderWindow?.();
+      const interactor = renderWindow?.getInteractor?.();
+      if (!viewport || !renderer || !interactor) return;
+
+      const actor = vtkAnnotatedCubeActor.newInstance();
+      actor.setDefaultStyle({
+        fontStyle: 'bold',
+        fontFamily: 'Arial',
+        fontColor: '#10151d',
+        fontSizeScale: (resolution: number) => resolution / 4,
+        faceColor: '#dce8f5',
+        edgeThickness: 0.08,
+        edgeColor: '#182435',
+        resolution: 400,
+      });
+      actor.setXPlusFaceProperty({ text: 'IZQ', faceColor: '#8ec5ff' });
+      actor.setXMinusFaceProperty({ text: 'DER', faceColor: '#8ec5ff' });
+      actor.setYPlusFaceProperty({ text: 'POST', faceColor: '#93e0c1' });
+      actor.setYMinusFaceProperty({ text: 'ANT', faceColor: '#93e0c1' });
+      actor.setZPlusFaceProperty({ text: 'SUP', faceColor: '#ffd28c' });
+      actor.setZMinusFaceProperty({ text: 'INF', faceColor: '#ffd28c' });
+
+      const widget = vtkOrientationMarkerWidget.newInstance({
+        actor,
+        interactor,
+        parentRenderer: renderer,
+        viewportSize: 0.18,
+        minPixelSize: 76,
+        maxPixelSize: 130,
+      });
+      widget.setViewportCorner(vtkOrientationMarkerWidget.Corners.TOP_RIGHT);
+      widget.setEnabled(true);
+      widget.updateMarkerOrientation();
+      viewport.addWidget?.(VOLUME_3D_ORIENTATION_WIDGET_ID, widget);
+      volume3DOrientationMarkerRef.current = { widget, actor };
+      renderWindow.render?.();
+    } catch (error) {
+      console.warn('[MPR][3D] no se pudo inicializar el cubo de orientación', error);
+      destroyVolume3DOrientationMarker();
+    }
+  }, [destroyVolume3DOrientationMarker]);
+
+  const setVolume3DOrientation = useCallback((orientation: Volume3DOrientation) => {
+    const renderingEngine = renderingEngineRef.current;
+    const viewport = renderingEngine?.getViewport(VOLUME_3D_VIEWPORT_ID) as any;
+    if (!renderingEngine || !viewport) return;
+
+    const orientationSource = orientation === 'front' || orientation === 'back'
+      ? CORONAL_VIEWPORT_ID
+      : orientation === 'left' || orientation === 'right'
+        ? SAGITTAL_VIEWPORT_ID
+        : AXIAL_VIEWPORT_ID;
+    const sourceCamera = (renderingEngine.getViewport(orientationSource) as any)?.getCamera?.();
+    if (!sourceCamera?.viewPlaneNormal || !sourceCamera?.viewUp) return;
+
+    const reverseNormal = orientation === 'back' || orientation === 'right' || orientation === 'superior';
+    const viewPlaneNormal = sourceCamera.viewPlaneNormal
+      .slice(0, 3)
+      .map((value: number) => reverseNormal ? -value : value);
+    const viewUp = sourceCamera.viewUp.slice(0, 3);
+
+    viewport.setCamera?.({ viewPlaneNormal, viewUp });
+    viewport.resetCamera?.({ resetPan: true, resetZoom: true, resetToCenter: true });
+    viewport.getRenderer?.().resetCameraClippingRange?.();
+    volume3DOrientationMarkerRef.current?.widget?.updateMarkerOrientation?.();
+    viewport.render?.();
+  }, []);
 
   const toggleVolume3D = useCallback(() => {
     if (showVolume3D) {
@@ -1520,6 +1620,7 @@ const MPRView: React.FC<MPRViewProps> = ({
       if (sourceVolumeActorUIDs.length) {
         volume3DViewport.removeActors(sourceVolumeActorUIDs);
       }
+      initializeVolume3DOrientationMarker(renderingEngine);
       console.info('[MPR][3D] source CT actors removed from surface-only viewport', {
         volumeId,
         removedActorUIDs: sourceVolumeActorUIDs,
@@ -1569,7 +1670,7 @@ const MPRView: React.FC<MPRViewProps> = ({
       setError(err instanceof Error ? err.message : 'Failed to initialize MPR');
       setIsLoading(false);
     }
-  }, [studyInstanceUID, series, volumeId, voxelSegmentationEnabled]);
+  }, [initializeVolume3DOrientationMarker, studyInstanceUID, series, volumeId, voxelSegmentationEnabled]);
 
   useEffect(() => {
     const segmentationId = segmentationIdRef.current;
@@ -1984,6 +2085,7 @@ const MPRView: React.FC<MPRViewProps> = ({
           });
           viewport.resetCamera?.({ resetOrientation: false, resetRotation: false });
           viewport.getRenderer?.().resetCameraClippingRange?.();
+          volume3DOrientationMarkerRef.current?.widget?.updateMarkerOrientation?.();
           viewport.render?.();
           console.info('[MPR][3D] render state after camera fit', {
             camera: viewport.getCamera?.(),
@@ -2308,6 +2410,7 @@ const MPRView: React.FC<MPRViewProps> = ({
         cornerstoneTools.ToolGroupManager.destroyToolGroup(VOLUME_3D_TOOL_GROUP_ID);
         volume3DToolGroupRef.current = null;
       }
+      destroyVolume3DOrientationMarker();
       if (renderingEngineRef.current) {
         renderingEngineRef.current.destroy();
         renderingEngineRef.current = null;
@@ -2318,7 +2421,7 @@ const MPRView: React.FC<MPRViewProps> = ({
         // Ignore
       }
     };
-  }, [initMPR, volumeId]);
+  }, [destroyVolume3DOrientationMarker, initMPR, volumeId]);
 
   // Keep Cornerstone's camera synchronized with the CSS layout. The engine
   // recalculates the canvas aspect ratio when the window or sidebars change.
@@ -2334,6 +2437,7 @@ const MPRView: React.FC<MPRViewProps> = ({
       if (!engine) return;
 
       engine.resize(false, true);
+      volume3DOrientationMarkerRef.current?.widget?.updateViewport?.();
       engine.renderViewports(ALL_VIEWPORT_IDS);
     });
 
@@ -2347,6 +2451,67 @@ const MPRView: React.FC<MPRViewProps> = ({
     if (maximizedViewport === viewportId) return 'mpr-viewport-container maximized';
     return 'mpr-viewport-container hidden';
   };
+
+  const renderVolume3DNavigation = () => (
+    <div
+      className="mpr-3d-navigation"
+      aria-label="Orientación anatómica del volumen 3D"
+      onPointerDown={event => event.stopPropagation()}
+      onClick={event => event.stopPropagation()}
+    >
+      <span className="mpr-3d-navigation-title">Vistas</span>
+      <div className="mpr-3d-navigation-grid">
+        <button
+          type="button"
+          className="mpr-3d-view-superior"
+          onClick={() => setVolume3DOrientation('superior')}
+          title="Vista superior"
+        >
+          SUP
+        </button>
+        <button
+          type="button"
+          className="mpr-3d-view-left"
+          onClick={() => setVolume3DOrientation('left')}
+          title="Vista lateral izquierda"
+        >
+          IZQ
+        </button>
+        <button
+          type="button"
+          className="mpr-3d-view-front"
+          onClick={() => setVolume3DOrientation('front')}
+          title="Vista anterior"
+        >
+          ANT
+        </button>
+        <button
+          type="button"
+          className="mpr-3d-view-right"
+          onClick={() => setVolume3DOrientation('right')}
+          title="Vista lateral derecha"
+        >
+          DER
+        </button>
+        <button
+          type="button"
+          className="mpr-3d-view-back"
+          onClick={() => setVolume3DOrientation('back')}
+          title="Vista posterior"
+        >
+          POST
+        </button>
+        <button
+          type="button"
+          className="mpr-3d-view-inferior"
+          onClick={() => setVolume3DOrientation('inferior')}
+          title="Vista inferior"
+        >
+          INF
+        </button>
+      </div>
+    </div>
+  );
 
   const renderViewports = () => (
     <>
@@ -2724,6 +2889,7 @@ const MPRView: React.FC<MPRViewProps> = ({
               onPointerDown={() => setShowVolume3D(true)}
               onClick={handleVolume3DClick}
             />
+            {showVolume3D && renderVolume3DNavigation()}
           </div>
         </div>
 
@@ -2779,6 +2945,7 @@ const MPRView: React.FC<MPRViewProps> = ({
             onPointerDown={() => setShowVolume3D(true)}
             onClick={handleVolume3DClick}
           />
+          {showVolume3D && renderVolume3DNavigation()}
         </div>
       </div>
 

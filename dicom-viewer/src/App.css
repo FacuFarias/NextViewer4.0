@@ -2162,6 +2162,72 @@ select {
   border-left-color: #43d17b;
 }
 
+.mpr-3d-navigation {
+  position: absolute;
+  top: 142px;
+  right: 8px;
+  z-index: 25;
+  width: 116px;
+  padding: 5px 6px 6px;
+  border: 1px solid rgba(142, 197, 255, 0.45);
+  border-radius: 6px;
+  background: rgba(10, 14, 22, 0.82);
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.38);
+  color: #dce8f5;
+  backdrop-filter: blur(3px);
+  pointer-events: auto;
+  user-select: none;
+}
+
+.mpr-3d-navigation-title {
+  display: block;
+  margin-bottom: 4px;
+  color: #9fb3c8;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.mpr-3d-navigation-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-areas:
+    ". superior ."
+    "left front right"
+    ". back ."
+    ". inferior .";
+  gap: 3px;
+}
+
+.mpr-3d-navigation button {
+  min-width: 0;
+  height: 23px;
+  padding: 0 3px;
+  border: 1px solid #40566d;
+  border-radius: 3px;
+  background: #172433;
+  color: #dce8f5;
+  font-size: 0.57rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.mpr-3d-navigation button:hover,
+.mpr-3d-navigation button:focus-visible {
+  border-color: #8ec5ff;
+  background: #243b52;
+  outline: none;
+}
+
+.mpr-3d-view-superior { grid-area: superior; }
+.mpr-3d-view-left { grid-area: left; }
+.mpr-3d-view-front { grid-area: front; }
+.mpr-3d-view-right { grid-area: right; }
+.mpr-3d-view-back { grid-area: back; }
+.mpr-3d-view-inferior { grid-area: inferior; }
+
 /* MPR Annotation Toolbar */
 .mpr-annotation-toolbar {
   display: flex;
