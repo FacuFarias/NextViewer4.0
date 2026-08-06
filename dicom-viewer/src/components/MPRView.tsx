@@ -795,7 +795,10 @@ const MPRView: React.FC<MPRViewProps> = ({
     const sourceCamera = (renderingEngine.getViewport(orientationSource) as any)?.getCamera?.();
     if (!sourceCamera?.viewPlaneNormal || !sourceCamera?.viewUp) return;
 
-    const reverseNormal = orientation === 'back' || orientation === 'right' || orientation === 'superior';
+    // Cornerstone's sagittal camera normal points toward the patient's right
+    // side. Reverse the lateral mapping so the quick views and the cube agree
+    // with the anatomical labels shown to the user.
+    const reverseNormal = orientation === 'back' || orientation === 'left' || orientation === 'superior';
     const viewPlaneNormal = sourceCamera.viewPlaneNormal
       .slice(0, 3)
       .map((value: number) => reverseNormal ? -value : value);
