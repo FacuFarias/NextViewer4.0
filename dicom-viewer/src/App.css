@@ -2173,6 +2173,31 @@ select {
   width: 76px;
 }
 
+.mpr-region-grow-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+
+.mpr-region-grow-control input,
+.mpr-region-grow-control select {
+  width: 58px;
+  padding: 3px 4px;
+  background: var(--background-color);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+}
+
+.mpr-region-grow-control select {
+  width: 48px;
+}
+
 .mpr-segment-color {
   width: 12px;
   height: 12px;

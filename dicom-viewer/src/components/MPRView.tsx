@@ -35,6 +35,10 @@ import {
   interpolateLabelmapSegment,
   LabelmapInterpolationAxis,
 } from '../services/labelmapInterpolation';
+import {
+  growLabelmapRegion,
+  RegionGrowConnectivity,
+} from '../services/labelmapRegionGrowing';
 
 interface MPRViewProps {
   studyInstanceUID: string;
@@ -465,6 +469,10 @@ const MPRView: React.FC<MPRViewProps> = ({
   const [autoInterpolationEnabled, setAutoInterpolationEnabled] = useState(true);
   const [interpolationBusy, setInterpolationBusy] = useState(false);
   const [interpolationStatus, setInterpolationStatus] = useState<string | null>(null);
+  const [regionGrowTolerance, setRegionGrowTolerance] = useState(50);
+  const [regionGrowConnectivity, setRegionGrowConnectivity] = useState<RegionGrowConnectivity>(6);
+  const [regionGrowBusy, setRegionGrowBusy] = useState(false);
+  const [regionGrowStatus, setRegionGrowStatus] = useState<string | null>(null);
   const [segmentationReady, setSegmentationReady] = useState(false);
   const [segmentationError, setSegmentationError] = useState<string | null>(null);
   const [segmentationDirty, setSegmentationDirty] = useState(false);
@@ -597,10 +605,19 @@ const MPRView: React.FC<MPRViewProps> = ({
     setActiveTool(nextTool);
   }, []);
 
-  const setVoxelSegmentationTool = useCallback((toolName: 'Brush' | 'Eraser' | 'WindowLevel') => {
+  const setVoxelSegmentationTool = useCallback((toolName: 'Brush' | 'Eraser' | 'WindowLevel' | 'RegionGrow') => {
     if (!toolGroupRef.current || !segmentationReady) return;
     const { WindowLevelTool, BrushTool } = cornerstoneTools;
     const brush = toolGroupRef.current.getToolInstance?.(BrushTool.toolName);
+    if (toolName === 'RegionGrow') {
+      [WindowLevelTool.toolName, BrushTool.toolName].forEach(candidate => {
+        toolGroupRef.current?.setToolPassive(candidate);
+      });
+      setActiveTool(toolName);
+      setRegionGrowStatus('Haz clic en un voxel semilla de cualquier plano MPR');
+      setSegmentationOperationError(null);
+      return;
+    }
     const nextTool = toolName === 'Eraser' ? BrushTool.toolName : toolName;
 
     [WindowLevelTool.toolName, BrushTool.toolName].forEach(candidate => {
@@ -637,6 +654,110 @@ const MPRView: React.FC<MPRViewProps> = ({
     const brush = toolGroupRef.current?.getToolInstance?.(cornerstoneTools.BrushTool.toolName);
     brush?.redo?.();
   }, []);
+
+  const handleRegionGrow = useCallback((
+    plane: ViewportId,
+    event: React.PointerEvent<HTMLDivElement>
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    focusedViewportRef.current = plane;
+
+    const segmentationId = segmentationIdRef.current;
+    if (!segmentationId || !segmentationReady || regionGrowBusy) return;
+    if (activeSegmentLocked) {
+      setSegmentationOperationError(
+        'El segmento activo está bloqueado. Desbloquéalo antes de crecer la región.'
+      );
+      return;
+    }
+
+    try {
+      setRegionGrowBusy(true);
+      setSegmentationOperationError(null);
+      const sourceVolume = cache.getVolume(volumeId) as any;
+      const labelmap = getMinicatLabelmapData(segmentationId);
+      if (!sourceVolume?.imageData || !labelmap.volume?.imageData) {
+        throw new Error('El volumen CT o el Labelmap todavía no están disponibles');
+      }
+      if (sourceVolume.dimensions.some(
+        (value: number, index: number) => value !== labelmap.dimensions[index]
+      )) {
+        throw new Error('El volumen CT y el Labelmap no tienen la misma geometría');
+      }
+
+      const rect = event.currentTarget.getBoundingClientRect();
+      const viewport = renderingEngineRef.current?.getViewport(VIEWPORT_CONFIG[plane].id) as any;
+      const canvas = viewport?.canvas;
+      if (!canvas || rect.width <= 0 || rect.height <= 0) {
+        throw new Error('El viewport MPR todavía no tiene un canvas válido');
+      }
+
+      const canvasPoint: [number, number] = [
+        (event.clientX - rect.left) * (canvas.width / rect.width),
+        (event.clientY - rect.top) * (canvas.height / rect.height),
+      ];
+      const worldPoint = viewport.canvasToWorld(canvasPoint);
+      const seedIJK = csUtils.transformWorldToIndex(
+        labelmap.volume.imageData,
+        worldPoint
+      ) as [number, number, number];
+      const sourceScalarData = sourceVolume.voxelManager.getCompleteScalarDataArray();
+      const result = growLabelmapRegion({
+        sourceScalarData,
+        labelmapScalarData: labelmap.scalarData,
+        dimensions: labelmap.dimensions,
+        seedIJK,
+        segmentIndex: activeCtSinusesFeature.segmentIndex,
+        toleranceHU: regionGrowTolerance,
+        connectivity: regionGrowConnectivity,
+        maxVoxels: 500_000,
+        setLabelValue: (offset, value) => {
+          labelmap.volume.voxelManager.setAtIndex(offset, value);
+        },
+      });
+
+      if (result.changedVoxelCount > 0) {
+        labelmap.volume.modified();
+        cornerstoneTools.segmentation.triggerSegmentationEvents
+          .triggerSegmentationDataModified(
+            segmentationId,
+            result.modifiedNativeSlices,
+            activeCtSinusesFeature.segmentIndex
+          );
+        renderingEngineRef.current?.renderViewports(MPR_VIEWPORT_IDS);
+      }
+
+      setRegionGrowStatus(
+        `${result.changedVoxelCount.toLocaleString()} voxels · HU ${Math.round(result.lowerThreshold)}–${Math.round(result.upperThreshold)}${result.stoppedByLimit ? ' · límite alcanzado' : ''}`
+      );
+      console.info('[MPR][RegionGrow] completed', {
+        segmentationId,
+        plane,
+        seedIJK,
+        segmentIndex: activeCtSinusesFeature.segmentIndex,
+        connectivity: regionGrowConnectivity,
+        toleranceHU: regionGrowTolerance,
+        ...result,
+      });
+    } catch (error) {
+      console.error('[MPR][RegionGrow] failed', error);
+      setRegionGrowStatus(null);
+      setSegmentationOperationError(
+        error instanceof Error ? error.message : 'No se pudo crecer la región'
+      );
+    } finally {
+      setRegionGrowBusy(false);
+    }
+  }, [
+    activeCtSinusesFeature,
+    activeSegmentLocked,
+    regionGrowBusy,
+    regionGrowConnectivity,
+    regionGrowTolerance,
+    segmentationReady,
+    volumeId,
+  ]);
 
   useEffect(() => {
     if (!voxelSegmentationEnabled) {
@@ -1723,7 +1844,12 @@ const MPRView: React.FC<MPRViewProps> = ({
             <div
               ref={element => { viewportRefs.current[plane] = element; }}
               className="mpr-viewport"
-              onPointerDown={() => { focusedViewportRef.current = plane; }}
+              onPointerDown={event => {
+                focusedViewportRef.current = plane;
+                if (activeTool === 'RegionGrow') {
+                  handleRegionGrow(plane, event);
+                }
+              }}
               onDoubleClick={() => handleDoubleClick(plane)}
             />
           </div>
@@ -1796,6 +1922,46 @@ const MPRView: React.FC<MPRViewProps> = ({
           >
             ◌ Eraser
           </button>
+          <button
+            className={`annotation-tool-btn ${activeTool === 'RegionGrow' ? 'active' : ''}`}
+            disabled={!segmentationReady || regionGrowBusy}
+            onClick={() => setVoxelSegmentationTool('RegionGrow')}
+            title="Crecimiento de región 3D por valores HU"
+          >
+            {regionGrowBusy ? '… Grow' : '◉ Grow'}
+          </button>
+          {activeTool === 'RegionGrow' && (
+            <>
+              <label className="mpr-region-grow-control">
+                <span>HU ±</span>
+                <input
+                  type="number"
+                  min="1"
+                  max="500"
+                  step="1"
+                  value={regionGrowTolerance}
+                  onChange={event => setRegionGrowTolerance(
+                    Math.max(1, Math.min(500, Number(event.target.value) || 1))
+                  )}
+                  disabled={regionGrowBusy}
+                />
+              </label>
+              <label className="mpr-region-grow-control">
+                <span>Conn.</span>
+                <select
+                  value={regionGrowConnectivity}
+                  onChange={event => setRegionGrowConnectivity(
+                    Number(event.target.value) as RegionGrowConnectivity
+                  )}
+                  disabled={regionGrowBusy}
+                >
+                  <option value={6}>6</option>
+                  <option value={18}>18</option>
+                  <option value={26}>26</option>
+                </select>
+              </label>
+            </>
+          )}
           <label className="mpr-brush-size-control">
             <span>Size</span>
             <input
@@ -1841,6 +2007,11 @@ const MPRView: React.FC<MPRViewProps> = ({
           {autoInterpolationEnabled && interpolationStatus && (
             <span className="mpr-interpolation-status" title={interpolationStatus}>
               {interpolationStatus}
+            </span>
+          )}
+          {activeTool === 'RegionGrow' && regionGrowStatus && (
+            <span className="mpr-interpolation-status" title={regionGrowStatus}>
+              {regionGrowStatus}
             </span>
           )}
           <span className="mpr-active-segment" title="Estructura voxel activa">
