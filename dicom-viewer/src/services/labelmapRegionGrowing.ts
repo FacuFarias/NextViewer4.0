@@ -8,6 +8,8 @@ export interface LabelmapRegionGrowingRequest {
   segmentIndex: number;
   toleranceHU: number;
   connectivity: RegionGrowConnectivity;
+  spacing: [number, number, number];
+  maxDistanceMM: number;
   maxVoxels: number;
   setLabelValue?: (offset: number, value: number) => void;
 }
@@ -21,6 +23,8 @@ export interface LabelmapRegionEraseRequest {
   segmentIndex: number;
   toleranceHU: number;
   connectivity: RegionGrowConnectivity;
+  spacing: [number, number, number];
+  maxDistanceMM: number;
   maxVoxels: number;
   setLabelValue?: (offset: number, value: number) => void;
 }
@@ -34,6 +38,7 @@ export interface LabelmapRegionGrowingResult {
   changedVoxelOffsets: number[];
   modifiedNativeSlices: number[];
   stoppedByLimit: boolean;
+  stoppedByDistance: boolean;
 }
 
 function getNeighborOffsets(connectivity: RegionGrowConnectivity): Array<[number, number, number]> {
@@ -61,6 +66,24 @@ function toOffset(
   return i + dimensions[0] * (j + dimensions[1] * k);
 }
 
+function isWithinMaxDistance(
+  candidateIJK: [number, number, number],
+  seedIJKs: Array<[number, number, number]>,
+  spacing: [number, number, number],
+  maxDistanceMM: number
+): boolean {
+  if (!Number.isFinite(maxDistanceMM)) return true;
+  const safeDistance = Math.max(0, maxDistanceMM);
+  const maxDistanceSquared = safeDistance ** 2;
+  return seedIJKs.some(seed => {
+    const distanceSquared =
+      ((candidateIJK[0] - seed[0]) * Number(spacing[0])) ** 2 +
+      ((candidateIJK[1] - seed[1]) * Number(spacing[1])) ** 2 +
+      ((candidateIJK[2] - seed[2]) * Number(spacing[2])) ** 2;
+    return distanceSquared <= maxDistanceSquared;
+  });
+}
+
 /**
  * Grows a labelmap from one CT voxel using a seed-relative HU interval.
  * Other non-zero segments are treated as barriers and are never overwritten.
@@ -76,6 +99,8 @@ export function growLabelmapRegion(
     segmentIndex,
     toleranceHU,
     connectivity,
+    spacing,
+    maxDistanceMM,
     maxVoxels,
     setLabelValue,
   } = request;
@@ -107,6 +132,7 @@ export function growLabelmapRegion(
   const visited = new Uint8Array(width * height * depth);
   const queue = new Int32Array(safeMaxVoxels);
   const neighborOffsets = getNeighborOffsets(connectivity);
+  const seedIJKs: Array<[number, number, number]> = [seedIJK];
   const modifiedNativeSlices = new Set<number>();
   let head = 0;
   let tail = 0;
@@ -114,6 +140,7 @@ export function growLabelmapRegion(
   let changedVoxelCount = 0;
   const changedVoxelOffsets: number[] = [];
   let stoppedByLimit = false;
+  let stoppedByDistance = false;
 
   visited[seedOffset] = 1;
   queue[tail] = seedOffset;
@@ -147,6 +174,11 @@ export function growLabelmapRegion(
 
       const neighborOffset = toOffset(dimensions, ni, nj, nk);
       if (visited[neighborOffset]) continue;
+      const neighborIJK: [number, number, number] = [ni, nj, nk];
+      if (!isWithinMaxDistance(neighborIJK, seedIJKs, spacing, maxDistanceMM)) {
+        stoppedByDistance = true;
+        continue;
+      }
       visited[neighborOffset] = 1;
 
       const neighborLabel = labelmapScalarData[neighborOffset];
@@ -176,6 +208,7 @@ export function growLabelmapRegion(
     changedVoxelOffsets,
     modifiedNativeSlices: Array.from(modifiedNativeSlices).sort((left, right) => left - right),
     stoppedByLimit,
+    stoppedByDistance,
   };
 }
 
@@ -196,12 +229,15 @@ export function eraseLabelmapRegion(
     segmentIndex,
     toleranceHU,
     connectivity,
+    spacing,
+    maxDistanceMM,
     maxVoxels,
     setLabelValue,
   } = request;
   const [width, height, depth] = dimensions;
   const candidateSeeds = seedIJKs?.length ? seedIJKs : [seedIJK];
   const validSeedOffsets: number[] = [];
+  const validSeedIJKs: Array<[number, number, number]> = [];
   for (const [seedI, seedJ, seedK] of candidateSeeds) {
     if (
       seedI < 0 || seedI >= width ||
@@ -211,6 +247,7 @@ export function eraseLabelmapRegion(
     const offset = toOffset(dimensions, seedI, seedJ, seedK);
     if (labelmapScalarData[offset] === segmentIndex) {
       validSeedOffsets.push(offset);
+      validSeedIJKs.push([seedI, seedJ, seedK]);
     }
   }
   if (!validSeedOffsets.length) {
@@ -237,6 +274,7 @@ export function eraseLabelmapRegion(
   let selectedVoxelCount = 0;
   let changedVoxelCount = 0;
   let stoppedByLimit = false;
+  let stoppedByDistance = false;
 
   for (const offset of validSeedOffsets) {
     if (visited[offset]) continue;
@@ -279,6 +317,11 @@ export function eraseLabelmapRegion(
 
       const neighborOffset = toOffset(dimensions, ni, nj, nk);
       if (visited[neighborOffset]) continue;
+      const neighborIJK: [number, number, number] = [ni, nj, nk];
+      if (!isWithinMaxDistance(neighborIJK, validSeedIJKs, spacing, maxDistanceMM)) {
+        stoppedByDistance = true;
+        continue;
+      }
       visited[neighborOffset] = 1;
 
       if (labelmapScalarData[neighborOffset] !== segmentIndex) continue;
@@ -306,5 +349,6 @@ export function eraseLabelmapRegion(
     changedVoxelOffsets,
     modifiedNativeSlices: Array.from(modifiedNativeSlices).sort((left, right) => left - right),
     stoppedByLimit,
+    stoppedByDistance,
   };
 }

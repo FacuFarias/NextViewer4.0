@@ -549,6 +549,7 @@ const MPRView: React.FC<MPRViewProps> = ({
   const [interpolationStatus, setInterpolationStatus] = useState<string | null>(null);
   const [regionGrowTolerance, setRegionGrowTolerance] = useState(50);
   const [regionGrowConnectivity, setRegionGrowConnectivity] = useState<RegionGrowConnectivity>(6);
+  const [regionGrowMaxDistanceMm, setRegionGrowMaxDistanceMm] = useState(20);
   const [regionGrowBusy, setRegionGrowBusy] = useState(false);
   const [regionGrowStatus, setRegionGrowStatus] = useState<string | null>(null);
   const [regionEraserCursor, setRegionEraserCursor] = useState<RegionEraserCursor | null>(null);
@@ -976,6 +977,8 @@ const MPRView: React.FC<MPRViewProps> = ({
         segmentIndex: activeCtSinusesFeature.segmentIndex,
         toleranceHU: regionGrowTolerance,
         connectivity: regionGrowConnectivity,
+        spacing: labelmap.spacing,
+        maxDistanceMM: regionGrowMaxDistanceMm,
         maxVoxels: 500_000,
         ...(eraseSeedIJKs ? { seedIJKs: eraseSeedIJKs } : {}),
         setLabelValue: (offset: number, value: number) => {
@@ -1007,7 +1010,7 @@ const MPRView: React.FC<MPRViewProps> = ({
 
       const operationLabel = eraseMode ? 'Borrados' : 'Pintados';
       setRegionGrowStatus(
-        `${operationLabel}: ${result.changedVoxelCount.toLocaleString()} voxels · HU ${Math.round(result.lowerThreshold)}–${Math.round(result.upperThreshold)}${result.stoppedByLimit ? ' · límite alcanzado' : ''}`
+        `${operationLabel}: ${result.changedVoxelCount.toLocaleString()} voxels · HU ${Math.round(result.lowerThreshold)}–${Math.round(result.upperThreshold)} · máx. ${regionGrowMaxDistanceMm} mm${result.stoppedByDistance ? ' · distancia alcanzada' : ''}${result.stoppedByLimit ? ' · límite alcanzado' : ''}`
       );
       console.info('[MPR][RegionGrow] completed', {
         segmentationId,
@@ -1018,12 +1021,14 @@ const MPRView: React.FC<MPRViewProps> = ({
         segmentIndex: activeCtSinusesFeature.segmentIndex,
         connectivity: regionGrowConnectivity,
         toleranceHU: regionGrowTolerance,
+        maxDistanceMM: regionGrowMaxDistanceMm,
         seedValue: result.seedValue,
         lowerThreshold: result.lowerThreshold,
         upperThreshold: result.upperThreshold,
         selectedVoxelCount: result.selectedVoxelCount,
         changedVoxelCount: result.changedVoxelCount,
         modifiedNativeSlices: result.modifiedNativeSlices,
+        stoppedByDistance: result.stoppedByDistance,
         stoppedByLimit: result.stoppedByLimit,
       });
     } catch (error) {
@@ -1042,6 +1047,7 @@ const MPRView: React.FC<MPRViewProps> = ({
     brushSize,
     regionGrowBusy,
     regionGrowConnectivity,
+    regionGrowMaxDistanceMm,
     regionGrowTolerance,
     segmentationReady,
     volumeId,
@@ -2437,6 +2443,22 @@ const MPRView: React.FC<MPRViewProps> = ({
                   <option value={18}>18</option>
                   <option value={26}>26</option>
                 </select>
+              </label>
+              <label className="mpr-region-grow-control">
+                <span>Dist. máx.</span>
+                <input
+                  type="number"
+                  min="1"
+                  max="200"
+                  step="1"
+                  value={regionGrowMaxDistanceMm}
+                  onChange={event => setRegionGrowMaxDistanceMm(
+                    Math.max(1, Math.min(200, Number(event.target.value) || 1))
+                  )}
+                  disabled={regionGrowBusy}
+                  title="Distancia máxima de crecimiento desde la semilla, en milímetros"
+                />
+                <span>mm</span>
               </label>
             </>
           )}
