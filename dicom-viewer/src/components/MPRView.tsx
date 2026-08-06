@@ -747,19 +747,19 @@ const MPRView: React.FC<MPRViewProps> = ({
       actor.setDefaultStyle({
         fontStyle: 'bold',
         fontFamily: 'Arial',
-        fontColor: '#10151d',
+        fontColor: '#f7edff',
         fontSizeScale: (resolution: number) => resolution / 4,
-        faceColor: '#dce8f5',
-        edgeThickness: 0.08,
-        edgeColor: '#182435',
+        faceColor: '#241334',
+        edgeThickness: 0.045,
+        edgeColor: '#a855f7',
         resolution: 400,
       });
-      actor.setXPlusFaceProperty({ text: 'IZQ', faceColor: '#8ec5ff' });
-      actor.setXMinusFaceProperty({ text: 'DER', faceColor: '#8ec5ff' });
-      actor.setYPlusFaceProperty({ text: 'POST', faceColor: '#93e0c1' });
-      actor.setYMinusFaceProperty({ text: 'ANT', faceColor: '#93e0c1' });
-      actor.setZPlusFaceProperty({ text: 'SUP', faceColor: '#ffd28c' });
-      actor.setZMinusFaceProperty({ text: 'INF', faceColor: '#ffd28c' });
+      actor.setXPlusFaceProperty({ text: 'IZQ', faceColor: '#6d28a9', fontColor: '#f7edff' });
+      actor.setXMinusFaceProperty({ text: 'DER', faceColor: '#6d28a9', fontColor: '#f7edff' });
+      actor.setYPlusFaceProperty({ text: 'POST', faceColor: '#4c1d78', fontColor: '#f7edff' });
+      actor.setYMinusFaceProperty({ text: 'ANT', faceColor: '#4c1d78', fontColor: '#f7edff' });
+      actor.setZPlusFaceProperty({ text: 'SUP', faceColor: '#8b3fc7', fontColor: '#f7edff' });
+      actor.setZMinusFaceProperty({ text: 'INF', faceColor: '#8b3fc7', fontColor: '#f7edff' });
 
       const widget = vtkOrientationMarkerWidget.newInstance({
         actor,
