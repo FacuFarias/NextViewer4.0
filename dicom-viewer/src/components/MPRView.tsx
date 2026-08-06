@@ -542,6 +542,7 @@ const MPRView: React.FC<MPRViewProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [maximizedViewport, setMaximizedViewport] = useState<ViewportId | null>(null);
   const [showVolume3D, setShowVolume3D] = useState(false);
+  const [showMprCrosshairs, setShowMprCrosshairs] = useState(true);
   const [activeTool, setActiveTool] = useState<string>('WindowLevel');
   const [brushSize, setBrushSize] = useState(25);
   const [autoInterpolationEnabled, setAutoInterpolationEnabled] = useState(true);
@@ -2131,7 +2132,28 @@ const MPRView: React.FC<MPRViewProps> = ({
     if (!worldCenter) return;
 
     lastNativeSliceRef.current = imageIndex;
-    setMprCrosshairCenter(worldCenter);
+    const crosshairsTool = toolGroupRef.current?.getToolInstance?.(
+      cornerstoneTools.CrosshairsTool.toolName
+    );
+    const currentCenter = Array.isArray(crosshairsTool?.toolCenter) &&
+      crosshairsTool.toolCenter.length >= 3 &&
+      crosshairsTool.toolCenter.slice(0, 3).every(Number.isFinite)
+      ? crosshairsTool.toolCenter.slice(0, 3) as number[]
+      : worldCenter;
+    const orientation = instance.imageOrientationPatient;
+    const normal = validVector(orientation, 6)
+      ? normalizeVector(crossProduct(orientation.slice(0, 3), orientation.slice(3, 6)))
+      : null;
+
+    // The native stack only changes its slice-plane coordinate. Preserve the
+    // two in-plane crosshair coordinates so a sagittal/coronal position is
+    // not reset to the image center after scrolling axial.
+    const deltaVector = worldCenter.map((point, index) => point - currentCenter[index]);
+    const normalDistance = normal ? dotProduct(deltaVector, normal) : 0;
+    const synchronizedWorldPoint = normal
+      ? currentCenter.map((value, component) => value + normal[component] * normalDistance)
+      : worldCenter;
+    setMprCrosshairCenter(synchronizedWorldPoint);
   }, [setMprCrosshairCenter]);
 
   // Stack navigation -> MPR reference position. Suppressing the Crosshairs
@@ -2309,7 +2331,7 @@ const MPRView: React.FC<MPRViewProps> = ({
             <div className="mpr-viewport-label">{t(`mpr.${plane}`)} · {t('mpr.reconstruction')}</div>
             <div
               ref={element => { viewportRefs.current[plane] = element; }}
-              className="mpr-viewport"
+              className={`mpr-viewport ${showMprCrosshairs ? '' : 'mpr-viewport-crosshairs-hidden'}`}
               onPointerDown={() => {
                 focusedViewportRef.current = plane;
               }}
@@ -2341,6 +2363,14 @@ const MPRView: React.FC<MPRViewProps> = ({
   const renderSegmentationControls = () => (
     <div className="mpr-segmentation-controls">
       <div className="mpr-segmentation-controls-header">Segmentación voxel</div>
+      <label className="mpr-axes-toggle">
+        <input
+          type="checkbox"
+          checked={showMprCrosshairs}
+          onChange={event => setShowMprCrosshairs(event.target.checked)}
+        />
+        <span>Ver ejes de corte</span>
+      </label>
       <div className="mpr-segmentation-controls-tools">
         <button
           className={`annotation-tool-btn ${activeTool === 'Brush' ? 'active' : ''}`}

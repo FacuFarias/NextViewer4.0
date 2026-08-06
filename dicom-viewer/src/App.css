@@ -2059,6 +2059,10 @@ select {
   height: 100%;
 }
 
+.mpr-viewport-crosshairs-hidden svg {
+  display: none !important;
+}
+
 .mpr-region-eraser-cursor {
   position: absolute;
   z-index: 20;
@@ -2241,6 +2245,20 @@ select {
   color: var(--primary-color);
   font-size: 0.9rem;
   font-weight: 700;
+}
+
+.mpr-axes-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.72rem;
+}
+
+.mpr-axes-toggle input {
+  accent-color: var(--primary-color);
+  margin: 0;
 }
 
 .mpr-segmentation-controls-tools,
