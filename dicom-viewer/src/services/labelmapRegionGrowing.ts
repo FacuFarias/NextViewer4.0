@@ -18,6 +18,7 @@ export interface LabelmapRegionGrowingResult {
   upperThreshold: number;
   selectedVoxelCount: number;
   changedVoxelCount: number;
+  changedVoxelOffsets: number[];
   modifiedNativeSlices: number[];
   stoppedByLimit: boolean;
 }
@@ -98,6 +99,7 @@ export function growLabelmapRegion(
   let tail = 0;
   let selectedVoxelCount = 0;
   let changedVoxelCount = 0;
+  const changedVoxelOffsets: number[] = [];
   let stoppedByLimit = false;
 
   visited[seedOffset] = 1;
@@ -113,6 +115,7 @@ export function growLabelmapRegion(
       labelmapScalarData[offset] = segmentIndex;
       setLabelValue?.(offset, segmentIndex);
       changedVoxelCount += 1;
+      changedVoxelOffsets.push(offset);
       modifiedNativeSlices.add(Math.floor(offset / (width * height)));
     }
 
@@ -157,6 +160,7 @@ export function growLabelmapRegion(
     upperThreshold,
     selectedVoxelCount,
     changedVoxelCount,
+    changedVoxelOffsets,
     modifiedNativeSlices: Array.from(modifiedNativeSlices).sort((left, right) => left - right),
     stoppedByLimit,
   };

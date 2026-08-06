@@ -69,6 +69,13 @@ interface SegmentInterpolationTracker {
   generatedOffsets: Set<number>;
 }
 
+interface RegionGrowHistoryEntry {
+  segmentationId: string;
+  segmentIndex: number;
+  changedVoxelOffsets: number[];
+  modifiedNativeSlices: number[];
+}
+
 const VIEWPORT_CONFIG: Record<ViewportId, {
   id: string;
   label: string;
@@ -489,6 +496,8 @@ const MPRView: React.FC<MPRViewProps> = ({
   const segmentationIdRef = useRef<string | null>(null);
   const interpolationTrackersRef = useRef<Map<number, SegmentInterpolationTracker>>(new Map());
   const interpolationInProgressRef = useRef(false);
+  const regionGrowUndoStackRef = useRef<RegionGrowHistoryEntry[]>([]);
+  const regionGrowRedoStackRef = useRef<RegionGrowHistoryEntry[]>([]);
   const volumeId = getMprVolumeId(studyInstanceUID, series.seriesInstanceUID);
 
   const activeCtSinusesFeature = CT_SINUSES_FEATURES.find(feature =>
@@ -676,15 +685,82 @@ const MPRView: React.FC<MPRViewProps> = ({
     );
   }, []);
 
-  const undoVoxelEdit = useCallback(() => {
-    const brush = toolGroupRef.current?.getToolInstance?.(cornerstoneTools.BrushTool.toolName);
-    brush?.undo?.();
+  const applyRegionGrowHistory = useCallback((
+    entry: RegionGrowHistoryEntry,
+    forward: boolean
+  ): boolean => {
+    if (segmentationIdRef.current !== entry.segmentationId) return false;
+    const labelmap = getMinicatLabelmapData(entry.segmentationId);
+    const targetValue = forward ? entry.segmentIndex : 0;
+    const expectedValue = forward ? 0 : entry.segmentIndex;
+    let changed = false;
+
+    entry.changedVoxelOffsets.forEach(offset => {
+      if (labelmap.scalarData[offset] !== expectedValue) return;
+      labelmap.scalarData[offset] = targetValue;
+      labelmap.volume.voxelManager.setAtIndex(offset, targetValue);
+      changed = true;
+    });
+
+    if (!changed) return false;
+    labelmap.volume.modified();
+    cornerstoneTools.segmentation.triggerSegmentationEvents
+      .triggerSegmentationDataModified(
+        entry.segmentationId,
+        entry.modifiedNativeSlices,
+        entry.segmentIndex
+      );
+    renderingEngineRef.current?.renderViewports(MPR_VIEWPORT_IDS);
+    return true;
   }, []);
 
+  const undoRegionGrow = useCallback(() => {
+    const entry = regionGrowUndoStackRef.current.pop();
+    if (!entry) {
+      setRegionGrowStatus('No hay un Grow para deshacer');
+      return;
+    }
+
+    if (applyRegionGrowHistory(entry, false)) {
+      regionGrowRedoStackRef.current.push(entry);
+      setRegionGrowStatus(`Grow deshecho · ${entry.changedVoxelOffsets.length.toLocaleString()} voxels`);
+    } else {
+      setRegionGrowStatus('No se pudo deshacer el Grow porque sus voxels cambiaron');
+    }
+  }, [applyRegionGrowHistory]);
+
+  const redoRegionGrow = useCallback(() => {
+    const entry = regionGrowRedoStackRef.current.pop();
+    if (!entry) {
+      setRegionGrowStatus('No hay un Grow para rehacer');
+      return;
+    }
+
+    if (applyRegionGrowHistory(entry, true)) {
+      regionGrowUndoStackRef.current.push(entry);
+      setRegionGrowStatus(`Grow rehecho · ${entry.changedVoxelOffsets.length.toLocaleString()} voxels`);
+    } else {
+      setRegionGrowStatus('No se pudo rehacer el Grow porque sus voxels cambiaron');
+    }
+  }, [applyRegionGrowHistory]);
+
+  const undoVoxelEdit = useCallback(() => {
+    if (activeTool === 'RegionGrow') {
+      undoRegionGrow();
+      return;
+    }
+    const brush = toolGroupRef.current?.getToolInstance?.(cornerstoneTools.BrushTool.toolName);
+    brush?.undo?.();
+  }, [activeTool, undoRegionGrow]);
+
   const redoVoxelEdit = useCallback(() => {
+    if (activeTool === 'RegionGrow') {
+      redoRegionGrow();
+      return;
+    }
     const brush = toolGroupRef.current?.getToolInstance?.(cornerstoneTools.BrushTool.toolName);
     brush?.redo?.();
-  }, []);
+  }, [activeTool, redoRegionGrow]);
 
   const handleRegionGrow = useCallback((
     plane: ViewportId,
@@ -749,6 +825,13 @@ const MPRView: React.FC<MPRViewProps> = ({
       });
 
       if (result.changedVoxelCount > 0) {
+        regionGrowUndoStackRef.current.push({
+          segmentationId,
+          segmentIndex: activeCtSinusesFeature.segmentIndex,
+          changedVoxelOffsets: result.changedVoxelOffsets,
+          modifiedNativeSlices: result.modifiedNativeSlices,
+        });
+        regionGrowRedoStackRef.current = [];
         labelmap.volume.modified();
         cornerstoneTools.segmentation.triggerSegmentationEvents
           .triggerSegmentationDataModified(
@@ -769,7 +852,13 @@ const MPRView: React.FC<MPRViewProps> = ({
         segmentIndex: activeCtSinusesFeature.segmentIndex,
         connectivity: regionGrowConnectivity,
         toleranceHU: regionGrowTolerance,
-        ...result,
+        seedValue: result.seedValue,
+        lowerThreshold: result.lowerThreshold,
+        upperThreshold: result.upperThreshold,
+        selectedVoxelCount: result.selectedVoxelCount,
+        changedVoxelCount: result.changedVoxelCount,
+        modifiedNativeSlices: result.modifiedNativeSlices,
+        stoppedByLimit: result.stoppedByLimit,
       });
     } catch (error) {
       console.error('[MPR][RegionGrow] failed', error);
@@ -938,6 +1027,8 @@ const MPRView: React.FC<MPRViewProps> = ({
       );
       await importMinicatDICOMSEG(segmentationId, volumeId, sourceImageIdsRef.current, dicomBuffer);
       interpolationTrackersRef.current.clear();
+      regionGrowUndoStackRef.current = [];
+      regionGrowRedoStackRef.current = [];
       setInterpolationStatus(null);
       setSegmentationDirty(false);
       onVoxelSegmentationDirty?.(false);
@@ -966,6 +1057,8 @@ const MPRView: React.FC<MPRViewProps> = ({
     const generation = ++initializationGenerationRef.current;
 
     try {
+      regionGrowUndoStackRef.current = [];
+      regionGrowRedoStackRef.current = [];
       setIsLoading(true);
       setError(null);
 
@@ -2057,7 +2150,7 @@ const MPRView: React.FC<MPRViewProps> = ({
             className="annotation-tool-btn"
             disabled={!segmentationReady}
             onClick={undoVoxelEdit}
-            title="Undo voxel"
+            title={activeTool === 'RegionGrow' ? 'Deshacer último Grow' : 'Deshacer edición voxel'}
           >
             ↶
           </button>
@@ -2065,7 +2158,7 @@ const MPRView: React.FC<MPRViewProps> = ({
             className="annotation-tool-btn"
             disabled={!segmentationReady}
             onClick={redoVoxelEdit}
-            title="Redo voxel"
+            title={activeTool === 'RegionGrow' ? 'Rehacer último Grow' : 'Rehacer edición voxel'}
           >
             ↷
           </button>
