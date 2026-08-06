@@ -2216,14 +2216,39 @@ const MPRView: React.FC<MPRViewProps> = ({
       if (synchronizingMprRef.current) return;
 
       const viewport = renderingEngineRef.current?.getViewport(viewportId);
-      const focalPoint = viewport?.getCamera?.().focalPoint;
+      const camera = viewport?.getCamera?.();
+      const focalPoint = camera?.focalPoint;
+      const viewPlaneNormal = camera?.viewPlaneNormal;
       if (!Array.isArray(focalPoint) || focalPoint.length < 3 ||
-          !focalPoint.slice(0, 3).every(Number.isFinite)) {
+          !focalPoint.slice(0, 3).every(Number.isFinite) ||
+          !Array.isArray(viewPlaneNormal) || viewPlaneNormal.length < 3 ||
+          !viewPlaneNormal.slice(0, 3).every(Number.isFinite)) {
         return;
       }
 
+      focusedViewportRef.current = plane;
+      const crosshairsTool = toolGroupRef.current?.getToolInstance?.(
+        cornerstoneTools.CrosshairsTool.toolName
+      );
+      const currentCenter = Array.isArray(crosshairsTool?.toolCenter) &&
+        crosshairsTool.toolCenter.length >= 3 &&
+        crosshairsTool.toolCenter.slice(0, 3).every(Number.isFinite)
+        ? crosshairsTool.toolCenter.slice(0, 3) as number[]
+        : focalPoint.slice(0, 3);
+      const normal = normalizeVector(viewPlaneNormal.slice(0, 3));
+      const normalDistance = dotProduct(
+        focalPoint.slice(0, 3).map((value: number, index: number) => value - currentCenter[index]),
+        normal
+      );
+      const synchronizedWorldPoint = currentCenter.map(
+        (value, component) => value + normal[component] * normalDistance
+      );
+
+      // A viewport camera's focal point contains its own in-plane center. A
+      // scroll must only replace the coordinate normal to that viewport;
+      // copying all three coordinates resets the other two MPR positions.
       setMprCrosshairCenter(
-        [...focalPoint.slice(0, 3)],
+        synchronizedWorldPoint,
         viewportId,
         false
       );
@@ -2333,6 +2358,9 @@ const MPRView: React.FC<MPRViewProps> = ({
               ref={element => { viewportRefs.current[plane] = element; }}
               className={`mpr-viewport ${showMprCrosshairs ? '' : 'mpr-viewport-crosshairs-hidden'}`}
               onPointerDown={() => {
+                focusedViewportRef.current = plane;
+              }}
+              onWheelCapture={() => {
                 focusedViewportRef.current = plane;
               }}
               onPointerMove={event => updateRegionEraserCursor(plane, event)}
