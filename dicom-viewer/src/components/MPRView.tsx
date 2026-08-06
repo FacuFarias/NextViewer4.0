@@ -58,7 +58,7 @@ const CORONAL_VIEWPORT_ID = 'mpr-coronal';
 const VOLUME_3D_VIEWPORT_ID = 'mpr-volume-3d';
 const TOOL_GROUP_ID = 'mpr-tool-group';
 const VOLUME_3D_TOOL_GROUP_ID = 'mpr-volume-3d-tool-group';
-const REGION_GROW_CLICK_DELAY_MS = 500;
+const REGION_GROW_CLICK_DELAY_MS = 250;
 
 type ViewportId = 'axial' | 'sagittal' | 'coronal';
 
@@ -1573,11 +1573,25 @@ const MPRView: React.FC<MPRViewProps> = ({
             setShowVolume3D(false);
             return;
           }
-          viewport.resetCamera?.();
+          // Start the 3D surface in the same patient-facing orientation as
+          // the coronal MPR: front view, head up. Reusing the MPR camera
+          // keeps this correct even when the CT acquisition is not aligned
+          // with the default world axes.
+          const coronalViewport = renderingEngine?.getViewport(CORONAL_VIEWPORT_ID) as any;
+          const coronalCamera = coronalViewport?.getCamera?.();
+          const frontViewPlaneNormal = coronalCamera?.viewPlaneNormal || [0, -1, 0];
+          const frontViewUp = coronalCamera?.viewUp || [0, 0, 1];
+          viewport.setCamera?.({
+            viewPlaneNormal: frontViewPlaneNormal,
+            viewUp: frontViewUp,
+          });
+          viewport.resetCamera?.({ resetOrientation: false, resetRotation: false });
           viewport.getRenderer?.().resetCameraClippingRange?.();
           viewport.render?.();
           console.info('[MPR][3D] render state after camera fit', {
             camera: viewport.getCamera?.(),
+            frontViewPlaneNormal,
+            frontViewUp,
             rendererBounds: viewport.getRenderer?.().computeVisiblePropBounds?.(),
           });
           setSurface3DStatus('ready');
