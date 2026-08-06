@@ -36,6 +36,7 @@ import {
   LabelmapInterpolationAxis,
 } from '../services/labelmapInterpolation';
 import {
+  eraseLabelmapRegion,
   growLabelmapRegion,
   RegionGrowConnectivity,
 } from '../services/labelmapRegionGrowing';
@@ -72,6 +73,7 @@ interface SegmentInterpolationTracker {
 interface RegionGrowHistoryEntry {
   segmentationId: string;
   segmentIndex: number;
+  operation: 'grow' | 'erase';
   changedVoxelOffsets: number[];
   modifiedNativeSlices: number[];
 }
@@ -540,8 +542,12 @@ const MPRView: React.FC<MPRViewProps> = ({
     }
     focusedViewportRef.current = viewportId;
     setMaximizedViewport(prev => prev === viewportId ? null : viewportId);
-    if (activeTool === 'RegionGrow') {
-      setRegionGrowStatus('Doble clic: zoom aplicado, sin modificar la segmentación');
+    if (activeTool === 'RegionGrow' || activeTool === 'Eraser') {
+      setRegionGrowStatus(
+        activeTool === 'Eraser'
+          ? 'Doble clic: zoom aplicado, sin borrar la segmentación'
+          : 'Doble clic: zoom aplicado, sin modificar la segmentación'
+      );
     }
   }, [activeTool]);
 
@@ -645,20 +651,24 @@ const MPRView: React.FC<MPRViewProps> = ({
     setActiveTool(nextTool);
   }, []);
 
-  const setVoxelSegmentationTool = useCallback((toolName: 'Brush' | 'Eraser' | 'WindowLevel' | 'RegionGrow') => {
+  const setVoxelSegmentationTool = useCallback((toolName: 'Brush' | 'Eraser' | 'BrushEraser' | 'WindowLevel' | 'RegionGrow') => {
     if (!toolGroupRef.current || !segmentationReady) return;
     const { WindowLevelTool, BrushTool } = cornerstoneTools;
     const brush = toolGroupRef.current.getToolInstance?.(BrushTool.toolName);
-    if (toolName === 'RegionGrow') {
+    if (toolName === 'RegionGrow' || toolName === 'Eraser') {
       [WindowLevelTool.toolName, BrushTool.toolName].forEach(candidate => {
         toolGroupRef.current?.setToolPassive(candidate);
       });
       setActiveTool(toolName);
-      setRegionGrowStatus('Un clic para crecer · doble clic reservado para zoom');
+      setRegionGrowStatus(
+        toolName === 'Eraser'
+          ? 'Un clic sobre un segmento para borrarlo · doble clic reservado para zoom'
+          : 'Un clic para crecer · doble clic reservado para zoom'
+      );
       setSegmentationOperationError(null);
       return;
     }
-    const nextTool = toolName === 'Eraser' ? BrushTool.toolName : toolName;
+    const nextTool = toolName === 'BrushEraser' ? BrushTool.toolName : toolName;
 
     [WindowLevelTool.toolName, BrushTool.toolName].forEach(candidate => {
       toolGroupRef.current.setToolPassive(candidate);
@@ -666,7 +676,7 @@ const MPRView: React.FC<MPRViewProps> = ({
 
     if (nextTool === BrushTool.toolName) {
       brush?.setActiveStrategy?.(
-        toolName === 'Eraser' ? 'ERASE_INSIDE_CIRCLE' : 'FILL_INSIDE_CIRCLE'
+        toolName === 'BrushEraser' ? 'ERASE_INSIDE_CIRCLE' : 'FILL_INSIDE_CIRCLE'
       );
     }
     toolGroupRef.current.setToolActive(nextTool, {
@@ -691,8 +701,9 @@ const MPRView: React.FC<MPRViewProps> = ({
   ): boolean => {
     if (segmentationIdRef.current !== entry.segmentationId) return false;
     const labelmap = getMinicatLabelmapData(entry.segmentationId);
-    const targetValue = forward ? entry.segmentIndex : 0;
-    const expectedValue = forward ? 0 : entry.segmentIndex;
+    const growsSegment = entry.operation === 'grow';
+    const targetValue = forward === growsSegment ? entry.segmentIndex : 0;
+    const expectedValue = forward === growsSegment ? 0 : entry.segmentIndex;
     let changed = false;
 
     entry.changedVoxelOffsets.forEach(offset => {
@@ -723,7 +734,8 @@ const MPRView: React.FC<MPRViewProps> = ({
 
     if (applyRegionGrowHistory(entry, false)) {
       regionGrowRedoStackRef.current.push(entry);
-      setRegionGrowStatus(`Grow deshecho · ${entry.changedVoxelOffsets.length.toLocaleString()} voxels`);
+      const operationLabel = entry.operation === 'erase' ? 'Eraser' : 'Grow';
+      setRegionGrowStatus(`${operationLabel} deshecho · ${entry.changedVoxelOffsets.length.toLocaleString()} voxels`);
     } else {
       setRegionGrowStatus('No se pudo deshacer el Grow porque sus voxels cambiaron');
     }
@@ -738,14 +750,15 @@ const MPRView: React.FC<MPRViewProps> = ({
 
     if (applyRegionGrowHistory(entry, true)) {
       regionGrowUndoStackRef.current.push(entry);
-      setRegionGrowStatus(`Grow rehecho · ${entry.changedVoxelOffsets.length.toLocaleString()} voxels`);
+      const operationLabel = entry.operation === 'erase' ? 'Eraser' : 'Grow';
+      setRegionGrowStatus(`${operationLabel} rehecho · ${entry.changedVoxelOffsets.length.toLocaleString()} voxels`);
     } else {
       setRegionGrowStatus('No se pudo rehacer el Grow porque sus voxels cambiaron');
     }
   }, [applyRegionGrowHistory]);
 
   const undoVoxelEdit = useCallback(() => {
-    if (activeTool === 'RegionGrow') {
+    if (activeTool === 'RegionGrow' || activeTool === 'Eraser') {
       undoRegionGrow();
       return;
     }
@@ -754,7 +767,7 @@ const MPRView: React.FC<MPRViewProps> = ({
   }, [activeTool, undoRegionGrow]);
 
   const redoVoxelEdit = useCallback(() => {
-    if (activeTool === 'RegionGrow') {
+    if (activeTool === 'RegionGrow' || activeTool === 'Eraser') {
       redoRegionGrow();
       return;
     }
@@ -771,6 +784,7 @@ const MPRView: React.FC<MPRViewProps> = ({
     focusedViewportRef.current = plane;
 
     const segmentationId = segmentationIdRef.current;
+    const eraseMode = activeTool === 'Eraser';
     if (!segmentationId || !segmentationReady || regionGrowBusy) return;
     if (activeSegmentLocked) {
       setSegmentationOperationError(
@@ -810,7 +824,7 @@ const MPRView: React.FC<MPRViewProps> = ({
         worldPoint
       ) as [number, number, number];
       const sourceScalarData = sourceVolume.voxelManager.getCompleteScalarDataArray();
-      const result = growLabelmapRegion({
+      const regionRequest = {
         sourceScalarData,
         labelmapScalarData: labelmap.scalarData,
         dimensions: labelmap.dimensions,
@@ -819,15 +833,19 @@ const MPRView: React.FC<MPRViewProps> = ({
         toleranceHU: regionGrowTolerance,
         connectivity: regionGrowConnectivity,
         maxVoxels: 500_000,
-        setLabelValue: (offset, value) => {
+        setLabelValue: (offset: number, value: number) => {
           labelmap.volume.voxelManager.setAtIndex(offset, value);
         },
-      });
+      };
+      const result = eraseMode
+        ? eraseLabelmapRegion(regionRequest)
+        : growLabelmapRegion(regionRequest);
 
       if (result.changedVoxelCount > 0) {
         regionGrowUndoStackRef.current.push({
           segmentationId,
           segmentIndex: activeCtSinusesFeature.segmentIndex,
+          operation: eraseMode ? 'erase' : 'grow',
           changedVoxelOffsets: result.changedVoxelOffsets,
           modifiedNativeSlices: result.modifiedNativeSlices,
         });
@@ -842,12 +860,14 @@ const MPRView: React.FC<MPRViewProps> = ({
         renderingEngineRef.current?.renderViewports(MPR_VIEWPORT_IDS);
       }
 
+      const operationLabel = eraseMode ? 'Borrados' : 'Pintados';
       setRegionGrowStatus(
-        `${result.changedVoxelCount.toLocaleString()} voxels · HU ${Math.round(result.lowerThreshold)}–${Math.round(result.upperThreshold)}${result.stoppedByLimit ? ' · límite alcanzado' : ''}`
+        `${operationLabel}: ${result.changedVoxelCount.toLocaleString()} voxels · HU ${Math.round(result.lowerThreshold)}–${Math.round(result.upperThreshold)}${result.stoppedByLimit ? ' · límite alcanzado' : ''}`
       );
       console.info('[MPR][RegionGrow] completed', {
         segmentationId,
         plane,
+        mode: eraseMode ? 'erase' : 'grow',
         seedIJK,
         segmentIndex: activeCtSinusesFeature.segmentIndex,
         connectivity: regionGrowConnectivity,
@@ -872,6 +892,7 @@ const MPRView: React.FC<MPRViewProps> = ({
   }, [
     activeCtSinusesFeature,
     activeSegmentLocked,
+    activeTool,
     regionGrowBusy,
     regionGrowConnectivity,
     regionGrowTolerance,
@@ -883,7 +904,7 @@ const MPRView: React.FC<MPRViewProps> = ({
     plane: ViewportId,
     event: React.MouseEvent<HTMLDivElement>
   ) => {
-    if (activeTool !== 'RegionGrow') return;
+    if (activeTool !== 'RegionGrow' && activeTool !== 'Eraser') return;
 
     const element = event.currentTarget;
     const { clientX, clientY } = event;
@@ -895,10 +916,14 @@ const MPRView: React.FC<MPRViewProps> = ({
       return;
     }
 
-    setRegionGrowStatus('Esperando… doble clic hace zoom sin marcar');
+    setRegionGrowStatus(
+      activeTool === 'Eraser'
+        ? 'Esperando… doble clic hace zoom sin borrar'
+        : 'Esperando… doble clic hace zoom sin marcar'
+    );
     regionGrowClickTimerRef.current = window.setTimeout(() => {
       regionGrowClickTimerRef.current = null;
-      if (activeTool === 'RegionGrow') {
+      if (activeTool === 'RegionGrow' || activeTool === 'Eraser') {
         handleRegionGrow(plane, element, clientX, clientY);
       }
     }, REGION_GROW_CLICK_DELAY_MS);
@@ -1401,7 +1426,7 @@ const MPRView: React.FC<MPRViewProps> = ({
     const handleSegmentationModified = (event: any) => {
       if (interpolationInProgressRef.current) return;
       if (event.detail?.segmentationId !== segmentationIdRef.current) return;
-      if (activeTool !== 'Brush' && activeTool !== 'Eraser') return;
+      if (activeTool !== 'Brush') return;
 
       const segmentIndex = Number(event.detail?.segmentIndex);
       if (!Number.isInteger(segmentIndex) || segmentIndex <= 0) return;
@@ -2077,11 +2102,19 @@ const MPRView: React.FC<MPRViewProps> = ({
           </button>
           <button
             className={`annotation-tool-btn ${activeTool === 'Eraser' ? 'active' : ''}`}
-            disabled={!segmentationReady}
+            disabled={!segmentationReady || regionGrowBusy}
             onClick={() => setVoxelSegmentationTool('Eraser')}
-            title="Borrador voxel"
+            title="Borrar la región segmentada conectada al voxel seleccionado"
           >
             ◌ Eraser
+          </button>
+          <button
+            className={`annotation-tool-btn ${activeTool === 'BrushEraser' ? 'active' : ''}`}
+            disabled={!segmentationReady}
+            onClick={() => setVoxelSegmentationTool('BrushEraser')}
+            title="Borrador circular voxel a voxel"
+          >
+            ◌ Circle
           </button>
           <button
             className={`annotation-tool-btn ${activeTool === 'RegionGrow' ? 'active' : ''}`}
@@ -2091,7 +2124,7 @@ const MPRView: React.FC<MPRViewProps> = ({
           >
             {regionGrowBusy ? '… Grow' : '◉ Grow'}
           </button>
-          {activeTool === 'RegionGrow' && (
+          {(activeTool === 'RegionGrow' || activeTool === 'Eraser') && (
             <>
               <label className="mpr-region-grow-control">
                 <span>HU ±</span>
@@ -2150,7 +2183,13 @@ const MPRView: React.FC<MPRViewProps> = ({
             className="annotation-tool-btn"
             disabled={!segmentationReady}
             onClick={undoVoxelEdit}
-            title={activeTool === 'RegionGrow' ? 'Deshacer último Grow' : 'Deshacer edición voxel'}
+            title={
+              activeTool === 'RegionGrow'
+                ? 'Deshacer último Grow'
+                : activeTool === 'Eraser'
+                  ? 'Deshacer último Eraser'
+                  : 'Deshacer edición voxel'
+            }
           >
             ↶
           </button>
@@ -2158,7 +2197,13 @@ const MPRView: React.FC<MPRViewProps> = ({
             className="annotation-tool-btn"
             disabled={!segmentationReady}
             onClick={redoVoxelEdit}
-            title={activeTool === 'RegionGrow' ? 'Rehacer último Grow' : 'Rehacer edición voxel'}
+            title={
+              activeTool === 'RegionGrow'
+                ? 'Rehacer último Grow'
+                : activeTool === 'Eraser'
+                  ? 'Rehacer último Eraser'
+                  : 'Rehacer edición voxel'
+            }
           >
             ↷
           </button>
@@ -2170,7 +2215,7 @@ const MPRView: React.FC<MPRViewProps> = ({
               {interpolationStatus}
             </span>
           )}
-          {activeTool === 'RegionGrow' && regionGrowStatus && (
+          {(activeTool === 'RegionGrow' || activeTool === 'Eraser') && regionGrowStatus && (
             <span className="mpr-interpolation-status" title={regionGrowStatus}>
               {regionGrowStatus}
             </span>

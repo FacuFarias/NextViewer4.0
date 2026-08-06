@@ -12,6 +12,18 @@ export interface LabelmapRegionGrowingRequest {
   setLabelValue?: (offset: number, value: number) => void;
 }
 
+export interface LabelmapRegionEraseRequest {
+  sourceScalarData: ArrayLike<number>;
+  labelmapScalarData: Uint8Array;
+  dimensions: [number, number, number];
+  seedIJK: [number, number, number];
+  segmentIndex: number;
+  toleranceHU: number;
+  connectivity: RegionGrowConnectivity;
+  maxVoxels: number;
+  setLabelValue?: (offset: number, value: number) => void;
+}
+
 export interface LabelmapRegionGrowingResult {
   seedValue: number;
   lowerThreshold: number;
@@ -139,6 +151,121 @@ export function growLabelmapRegion(
       const neighborLabel = labelmapScalarData[neighborOffset];
       if (neighborLabel !== 0 && neighborLabel !== segmentIndex) continue;
 
+      const neighborValue = Number(sourceScalarData[neighborOffset]);
+      if (!Number.isFinite(neighborValue) ||
+          neighborValue < lowerThreshold || neighborValue > upperThreshold) {
+        continue;
+      }
+
+      if (tail >= safeMaxVoxels) {
+        stoppedByLimit = true;
+        continue;
+      }
+      queue[tail] = neighborOffset;
+      tail += 1;
+    }
+  }
+
+  return {
+    seedValue,
+    lowerThreshold,
+    upperThreshold,
+    selectedVoxelCount,
+    changedVoxelCount,
+    changedVoxelOffsets,
+    modifiedNativeSlices: Array.from(modifiedNativeSlices).sort((left, right) => left - right),
+    stoppedByLimit,
+  };
+}
+
+/**
+ * Removes only the active segment from a CT-connected region. The seed must
+ * already belong to that segment, so an accidental click on an unsegmented
+ * voxel cannot erase unrelated labelmap data.
+ */
+export function eraseLabelmapRegion(
+  request: LabelmapRegionEraseRequest
+): LabelmapRegionGrowingResult {
+  const {
+    sourceScalarData,
+    labelmapScalarData,
+    dimensions,
+    seedIJK,
+    segmentIndex,
+    toleranceHU,
+    connectivity,
+    maxVoxels,
+    setLabelValue,
+  } = request;
+  const [width, height, depth] = dimensions;
+  const [seedI, seedJ, seedK] = seedIJK;
+  if (
+    seedI < 0 || seedI >= width ||
+    seedJ < 0 || seedJ >= height ||
+    seedK < 0 || seedK >= depth
+  ) {
+    throw new Error('La semilla está fuera del volumen CT');
+  }
+
+  const seedOffset = toOffset(dimensions, seedI, seedJ, seedK);
+  const seedValue = Number(sourceScalarData[seedOffset]);
+  if (!Number.isFinite(seedValue)) {
+    throw new Error('El voxel seleccionado no contiene un valor CT válido');
+  }
+  if (labelmapScalarData[seedOffset] !== segmentIndex) {
+    throw new Error('Seleccioná un voxel perteneciente al segmento activo para borrarlo');
+  }
+
+  const safeTolerance = Math.max(0, Number(toleranceHU) || 0);
+  const lowerThreshold = seedValue - safeTolerance;
+  const upperThreshold = seedValue + safeTolerance;
+  const safeMaxVoxels = Math.max(1, Math.floor(maxVoxels));
+  const visited = new Uint8Array(width * height * depth);
+  const queue = new Int32Array(safeMaxVoxels);
+  const neighborOffsets = getNeighborOffsets(connectivity);
+  const modifiedNativeSlices = new Set<number>();
+  const changedVoxelOffsets: number[] = [];
+  let head = 0;
+  let tail = 0;
+  let selectedVoxelCount = 0;
+  let changedVoxelCount = 0;
+  let stoppedByLimit = false;
+
+  visited[seedOffset] = 1;
+  queue[tail] = seedOffset;
+  tail += 1;
+
+  while (head < tail) {
+    const offset = queue[head];
+    head += 1;
+    selectedVoxelCount += 1;
+
+    if (labelmapScalarData[offset] === segmentIndex) {
+      labelmapScalarData[offset] = 0;
+      setLabelValue?.(offset, 0);
+      changedVoxelCount += 1;
+      changedVoxelOffsets.push(offset);
+      modifiedNativeSlices.add(Math.floor(offset / (width * height)));
+    }
+
+    const k = Math.floor(offset / (width * height));
+    const remainder = offset - k * width * height;
+    const j = Math.floor(remainder / width);
+    const i = remainder - j * width;
+
+    for (const [di, dj, dk] of neighborOffsets) {
+      const ni = i + di;
+      const nj = j + dj;
+      const nk = k + dk;
+      if (ni < 0 || ni >= width || nj < 0 || nj >= height || nk < 0 || nk >= depth) {
+        continue;
+      }
+
+      const neighborOffset = toOffset(dimensions, ni, nj, nk);
+      if (visited[neighborOffset]) continue;
+      visited[neighborOffset] = 1;
+
+      if (labelmapScalarData[neighborOffset] !== segmentIndex) continue;
       const neighborValue = Number(sourceScalarData[neighborOffset]);
       if (!Number.isFinite(neighborValue) ||
           neighborValue < lowerThreshold || neighborValue > upperThreshold) {
