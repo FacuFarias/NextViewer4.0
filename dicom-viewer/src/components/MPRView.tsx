@@ -706,6 +706,31 @@ const MPRView: React.FC<MPRViewProps> = ({
     }
   }, []);
 
+  const constrainVolume3DOrientationMarkerViewport = useCallback(() => {
+    const marker = volume3DOrientationMarkerRef.current;
+    const view = marker?.widget?.getInteractor?.()?.getView?.();
+    const markerRenderer = marker?.widget?.getRenderer?.();
+    const [viewWidth, viewHeight] = view?.getSize?.() || [];
+    if (!markerRenderer || !Number.isFinite(viewWidth) || !Number.isFinite(viewHeight) ||
+        viewWidth <= 0 || viewHeight <= 0) {
+      return;
+    }
+
+    // ContextPoolRenderingEngine can let OrientationMarkerWidget recalculate
+    // against the shared canvas and temporarily occupy the complete viewport.
+    // Keep the marker in a small, explicit top-right rectangle instead.
+    const markerSide = Math.min(72, Math.min(viewWidth, viewHeight) * 0.13);
+    const xFraction = markerSide / viewWidth;
+    const yFraction = markerSide / viewHeight;
+    markerRenderer.setViewport(
+      1 - xFraction,
+      1 - yFraction,
+      1,
+      1
+    );
+    markerRenderer.modified?.();
+  }, []);
+
   const initializeVolume3DOrientationMarker = useCallback((renderingEngine: RenderingEngine) => {
     destroyVolume3DOrientationMarker();
 
@@ -749,12 +774,13 @@ const MPRView: React.FC<MPRViewProps> = ({
       widget.updateMarkerOrientation();
       viewport.addWidget?.(VOLUME_3D_ORIENTATION_WIDGET_ID, widget);
       volume3DOrientationMarkerRef.current = { widget, actor };
+      constrainVolume3DOrientationMarkerViewport();
       renderWindow.render?.();
     } catch (error) {
       console.warn('[MPR][3D] no se pudo inicializar el cubo de orientación', error);
       destroyVolume3DOrientationMarker();
     }
-  }, [destroyVolume3DOrientationMarker]);
+  }, [constrainVolume3DOrientationMarkerViewport, destroyVolume3DOrientationMarker]);
 
   const setVolume3DOrientation = useCallback((orientation: Volume3DOrientation) => {
     const renderingEngine = renderingEngineRef.current;
@@ -2442,12 +2468,17 @@ const MPRView: React.FC<MPRViewProps> = ({
       // initialized in the hidden 64x64 viewport keeps a full-canvas size.
       engine.renderViewports(ALL_VIEWPORT_IDS);
       volume3DOrientationMarkerRef.current?.widget?.updateViewport?.();
+      constrainVolume3DOrientationMarkerViewport();
       engine.renderViewports(ALL_VIEWPORT_IDS);
+      window.requestAnimationFrame(() => {
+        constrainVolume3DOrientationMarkerViewport();
+        renderingEngineRef.current?.renderViewports([VOLUME_3D_VIEWPORT_ID]);
+      });
     });
 
     elements.forEach(element => resizeObserver.observe(element));
     return () => resizeObserver.disconnect();
-  }, []);
+  }, [constrainVolume3DOrientationMarkerViewport]);
 
   const getViewportClass = (viewportId: ViewportId) => {
     if (showVolume3D) return 'mpr-viewport-container hidden';
