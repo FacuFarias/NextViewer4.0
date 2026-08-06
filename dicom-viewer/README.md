@@ -19,8 +19,43 @@ Visor DICOM web profesional basado en Cornerstone.js 3D, diseñado para conectar
 ### MPR (Multi-Planar Reconstruction)
 - Visualización axial, sagital y coronal para estudios CT
 - Doble click para maximizar/restaurar viewports
+- Zoom estándar con rueda central, `Ctrl + rueda` y controles `- / + / 100%`
 - Crosshair sincronizado entre planos
-- Navegación por scroll en cada plano
+- Navegación por scroll con posición persistente e independiente en cada plano
+- Checkbox para mostrar u ocultar los ejes de corte durante la edición
+
+### Segmentación voxel 3D para MINICAT SINUS
+
+La rama `feature/minicat-voxel-segmentation` incorpora un flujo experimental de segmentación volumétrica editable:
+
+- Labelmap 3D único y compartido entre axial, sagital y coronal
+- Ontología de 19 estructuras anatómicas con `segmentIndex`, nombre y color propios
+- `Brush` para pintar y `Circle` para borrar voxels con tamaño ajustable entre 1 y 25
+- `Grow` por intensidad HU, conectividad 6/18/26 y distancia máxima desde la semilla
+- `Eraser` por crecimiento de región desde MPR y borrado de superficies desde la vista 3D
+- Tolerancia HU inicial adaptada a la estructura anatómica activa
+- Interpolación automática entre cortes marcados
+- Undo/redo para Brush, Grow y Eraser
+- Visibilidad y bloqueo independiente de cada segmento
+- Reconstrucción de superficie 3D con orientación frontal inicial
+- El Grow se ejecuta exclusivamente desde MPR; la vista 3D permite inspección y Eraser
+- Las anotaciones poligonales 2D existentes permanecen disponibles y separadas del Labelmap
+
+#### Persistencia DICOM SEG
+
+- El CT fuente no se modifica
+- Cada guardado genera un objeto DICOM SEG independiente con los segmentos del Labelmap
+- El objeto se publica en dcm4chee mediante DICOMweb STOW-RS
+- PostgreSQL conserva metadatos, estado, autor, UIDs y relación entre versiones
+- Las segmentaciones guardadas pueden listarse, abrirse, editarse y guardarse como una nueva versión
+- La importación valida compatibilidad geométrica con el volumen CT fuente
+
+#### Interfaz de segmentación
+
+- Los controles voxel están agrupados en la barra derecha
+- `Measurements` es colapsable y comienza cerrado
+- La barra superior queda reservada para navegación, Window/Level, zoom y cambio MPR/3D
+- El doble clic maximiza/restaura el viewport y no ejecuta accidentalmente Grow o Eraser
 
 ### Herramientas de Medición
 - Medición de distancias
@@ -68,6 +103,30 @@ docker build -t nextviewer4 .
 # Ejecutar
 docker run -p 3000:80 nextviewer4
 ```
+
+### Despliegue paralelo estable y experimental
+
+La imagen estable puede permanecer en `3000` mientras la rama de segmentación se ejecuta en `3001`. Los contenedores usan imágenes independientes; no es necesario duplicar ni reemplazar manualmente los archivos del visor estable.
+
+```bash
+# Desde la raíz del repositorio, sobre la rama experimental
+git switch feature/minicat-voxel-segmentation
+docker build -t nextviewer4-voxel:latest ./dicom-viewer
+
+docker run -d \
+  --name nextviewer4-voxel \
+  --restart unless-stopped \
+  --network opt_default \
+  -p 3001:80 \
+  nextviewer4-voxel:latest
+```
+
+Puertos usados en el servidor actual:
+
+| Versión | Rama | Puerto |
+|---------|------|--------|
+| Estable | `main` | `3000` |
+| Segmentación voxel | `feature/minicat-voxel-segmentation` | `3001` |
 
 ### Con docker-compose
 
@@ -193,6 +252,18 @@ El visor utiliza los siguientes endpoints de dcm4chee:
 | `GET /studies/{studyUID}/series/{seriesUID}/instances` | Obtener instancias |
 | `GET /studies/{studyUID}/series/{seriesUID}/instances/{instanceUID}/metadata` | Metadata completa |
 | `GET /wado?requestType=WADO&...` | Recuperar imágenes |
+| `POST /studies` | Publicar DICOM SEG mediante STOW-RS |
+
+## Endpoints de Segmentación
+
+El archivo DICOM SEG se almacena en el PACS. La API de reportes conserva únicamente sus metadatos y versionado:
+
+| Endpoint | Descripción |
+|----------|-------------|
+| `GET /report-api/segmentation-objects` | Listar segmentaciones por estudio/serie |
+| `POST /report-api/segmentation-objects` | Registrar una nueva versión DICOM SEG |
+| `GET /report-api/segmentation-objects/:id` | Obtener metadatos de una segmentación |
+| `PATCH /report-api/segmentation-objects/:id` | Actualizar nombre, descripción o estado |
 
 ## Configuración de Features
 
@@ -201,6 +272,7 @@ Los administradores pueden habilitar/deshabilitar features desde `/config`:
 - **MPR**: Activa/desactiva el modo MPR para CT
 - **Descarga DICOM**: Permite descargar estudios como ZIP
 - **Herramientas de Medición**: Activa/desactiva anotaciones
+- **MINICAT SINUS**: Activa el panel anatómico, Labelmap voxel y persistencia DICOM SEG
 - **Presets W/L**: Muestra presets de window/level
 - **Filmstrip**: Muestra la barra de miniaturas
 
