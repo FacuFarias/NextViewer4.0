@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import type { ViewerMeasurement } from '../hooks/useDicomViewer';
 import { getMeasurementLabel, useTranslation } from '../i18n';
 
@@ -38,6 +38,7 @@ const MeasurementsPanelContent: React.FC<MeasurementsPanelProps> = ({
   onMeasurementRetry,
 }) => {
   const { t } = useTranslation();
+  const [isOpen, setIsOpen] = useState(false);
 
   const getMeasurementValue = (measurement: ViewerMeasurement): string => {
     if (measurement.measurementType === 'nasal_septum_deviation' &&
@@ -52,12 +53,18 @@ const MeasurementsPanelContent: React.FC<MeasurementsPanelProps> = ({
 
   return (
   <section className="measurements-panel">
-    <div className="measurements-panel-header">
+    <button
+      type="button"
+      className="measurements-panel-header"
+      onClick={() => setIsOpen(open => !open)}
+      aria-expanded={isOpen}
+    >
       <span>{t('measurements.title')}</span>
+      <span className="measurements-panel-toggle">{isOpen ? '▾' : '▸'}</span>
       <span className="measurements-panel-count">{measurements.length}</span>
-    </div>
+    </button>
 
-    {measurements.length === 0 ? (
+    {!isOpen ? null : measurements.length === 0 ? (
       <p className="measurements-empty">{t('measurements.empty')}</p>
     ) : (
       <div className="measurements-list">

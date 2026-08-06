@@ -564,6 +564,7 @@ const MPRView: React.FC<MPRViewProps> = ({
   const [activeSegmentVisible, setActiveSegmentVisible] = useState(true);
   const [surface3DStatus, setSurface3DStatus] = useState<'idle' | 'building' | 'ready'>('idle');
   const [annotationToolbarHost, setAnnotationToolbarHost] = useState<HTMLElement | null>(null);
+  const [segmentationControlsHost, setSegmentationControlsHost] = useState<HTMLElement | null>(null);
   const segmentationIdRef = useRef<string | null>(null);
   const interpolationTrackersRef = useRef<Map<number, SegmentInterpolationTracker>>(new Map());
   const interpolationInProgressRef = useRef(false);
@@ -599,9 +600,12 @@ const MPRView: React.FC<MPRViewProps> = ({
 
   useEffect(() => {
     if (!embedded) return;
-    const host = document.getElementById('mpr-annotation-toolbar-slot');
-    setAnnotationToolbarHost(host);
-    return () => setAnnotationToolbarHost(null);
+    setAnnotationToolbarHost(document.getElementById('mpr-annotation-toolbar-slot'));
+    setSegmentationControlsHost(document.getElementById('mpr-segmentation-controls-slot'));
+    return () => {
+      setAnnotationToolbarHost(null);
+      setSegmentationControlsHost(null);
+    };
   }, [embedded]);
 
   const handleDoubleClick = useCallback((viewportId: ViewportId) => {
@@ -2334,7 +2338,229 @@ const MPRView: React.FC<MPRViewProps> = ({
     </>
   );
 
+  const renderSegmentationControls = () => (
+    <div className="mpr-segmentation-controls">
+      <div className="mpr-segmentation-controls-header">Segmentación voxel</div>
+      <div className="mpr-segmentation-controls-tools">
+        <button
+          className={`annotation-tool-btn ${activeTool === 'Brush' ? 'active' : ''}`}
+          disabled={!segmentationReady}
+          onClick={() => setVoxelSegmentationTool('Brush')}
+          title="Pincel voxel"
+        >
+          🖌 Brush
+        </button>
+        <button
+          className={`annotation-tool-btn ${activeTool === 'Eraser' ? 'active' : ''}`}
+          disabled={!segmentationReady || regionGrowBusy}
+          onClick={() => setVoxelSegmentationTool('Eraser')}
+          title="Borrar la región segmentada conectada al voxel seleccionado"
+        >
+          ◌ Eraser
+        </button>
+        <button
+          className={`annotation-tool-btn ${activeTool === 'BrushEraser' ? 'active' : ''}`}
+          disabled={!segmentationReady}
+          onClick={() => setVoxelSegmentationTool('BrushEraser')}
+          title="Borrador circular voxel a voxel"
+        >
+          ◌ Circle
+        </button>
+        <button
+          className={`annotation-tool-btn ${activeTool === 'RegionGrow' ? 'active' : ''}`}
+          disabled={!segmentationReady || regionGrowBusy}
+          onClick={() => setVoxelSegmentationTool('RegionGrow')}
+          title="Crecimiento de región desde MPR por valores HU"
+        >
+          {regionGrowBusy ? '… Grow' : '◉ Grow'}
+        </button>
+      </div>
+
+      {(activeTool === 'RegionGrow' || activeTool === 'Eraser') && (
+        <div className="mpr-segmentation-grow-settings">
+          <label className="mpr-region-grow-control">
+            <span>HU ±</span>
+            <input
+              type="number"
+              min="1"
+              max="500"
+              step="1"
+              value={regionGrowTolerance}
+              onChange={event => setRegionGrowTolerance(
+                Math.max(1, Math.min(500, Number(event.target.value) || 1))
+              )}
+              disabled={regionGrowBusy}
+            />
+          </label>
+          <label className="mpr-region-grow-control">
+            <span>Conn.</span>
+            <select
+              value={regionGrowConnectivity}
+              onChange={event => setRegionGrowConnectivity(
+                Number(event.target.value) as RegionGrowConnectivity
+              )}
+              disabled={regionGrowBusy}
+            >
+              <option value={6}>6</option>
+              <option value={18}>18</option>
+              <option value={26}>26</option>
+            </select>
+          </label>
+          <label className="mpr-region-grow-control">
+            <span>Dist. máx.</span>
+            <input
+              type="number"
+              min="1"
+              max="200"
+              step="1"
+              value={regionGrowMaxDistanceMm}
+              onChange={event => setRegionGrowMaxDistanceMm(
+                Math.max(1, Math.min(200, Number(event.target.value) || 1))
+              )}
+              disabled={regionGrowBusy}
+              title="Distancia máxima de crecimiento desde la semilla, en milímetros"
+            />
+            <span>mm</span>
+          </label>
+        </div>
+      )}
+
+      <label className="mpr-brush-size-control">
+        <span>Size</span>
+        <input
+          type="range"
+          min="1"
+          max="25"
+          value={brushSize}
+          onChange={event => updateBrushSize(Number(event.target.value))}
+          disabled={!segmentationReady}
+        />
+        <span>{brushSize}</span>
+      </label>
+      <div className="mpr-segmentation-controls-tools">
+        <button
+          className={`annotation-tool-btn ${autoInterpolationEnabled ? 'active' : ''}`}
+          disabled={!segmentationReady || interpolationBusy}
+          onClick={() => {
+            setAutoInterpolationEnabled(enabled => !enabled);
+            setInterpolationStatus(null);
+          }}
+          title="Interpolar automáticamente entre cortes pintados en la vista activa"
+        >
+          {interpolationBusy ? '… Interp.' : '↕ Auto'}
+        </button>
+        <button
+          className="annotation-tool-btn"
+          disabled={!segmentationReady}
+          onClick={undoVoxelEdit}
+          title={
+            activeTool === 'RegionGrow'
+              ? 'Deshacer último Grow'
+              : activeTool === 'Eraser'
+                ? 'Deshacer último Eraser'
+                : 'Deshacer edición voxel'
+          }
+        >
+          ↶
+        </button>
+        <button
+          className="annotation-tool-btn"
+          disabled={!segmentationReady}
+          onClick={redoVoxelEdit}
+          title={
+            activeTool === 'RegionGrow'
+              ? 'Rehacer último Grow'
+              : activeTool === 'Eraser'
+                ? 'Rehacer último Eraser'
+                : 'Rehacer edición voxel'
+          }
+        >
+          ↷
+        </button>
+      </div>
+
+      <div className="mpr-segmentation-controls-status">
+        <span className="mpr-segmentation-status">
+          {segmentationDirty ? '● unsaved' : '✓ saved'}
+        </span>
+        {autoInterpolationEnabled && interpolationStatus && (
+          <span className="mpr-interpolation-status" title={interpolationStatus}>
+            {interpolationStatus}
+          </span>
+        )}
+        {(activeTool === 'RegionGrow' || activeTool === 'Eraser') && regionGrowStatus && (
+          <span className="mpr-interpolation-status" title={regionGrowStatus}>
+            {regionGrowStatus}
+          </span>
+        )}
+      </div>
+
+      <div className="mpr-segmentation-controls-segment">
+        <span className="mpr-active-segment" title="Estructura voxel activa">
+          <span
+            className="mpr-segment-color"
+            style={{ backgroundColor: activeCtSinusesFeature.color }}
+          />
+          {activeCtSinusesFeature.label}
+        </span>
+        <button
+          className={`annotation-tool-btn ${activeSegmentLocked ? 'active' : ''}`}
+          disabled={!segmentationReady}
+          onClick={toggleActiveSegmentLock}
+          title={activeSegmentLocked ? 'Desbloquear segmento' : 'Bloquear segmento'}
+        >
+          {activeSegmentLocked ? '🔒' : '🔓'}
+        </button>
+        <button
+          className={`annotation-tool-btn ${activeSegmentVisible ? 'active' : ''}`}
+          disabled={!segmentationReady}
+          onClick={toggleActiveSegmentVisibility}
+          title={activeSegmentVisible ? 'Ocultar segmento' : 'Mostrar segmento'}
+        >
+          {activeSegmentVisible ? '◉' : '○'}
+        </button>
+      </div>
+
+      <div className="mpr-segmentation-controls-tools">
+        <button
+          className="annotation-tool-btn"
+          disabled={!segmentationReady || segmentationBusy}
+          onClick={() => void saveVoxelSegmentation()}
+          title="Guardar como nuevo DICOM SEG"
+        >
+          {segmentationBusy ? '…' : '💾 Nueva versión'}
+        </button>
+        <button
+          className="annotation-tool-btn"
+          disabled={!selectedSavedSegmentationId || !segmentationReady || segmentationBusy}
+          onClick={() => void openSavedSegmentation()}
+          title="Reconstruir el Labelmap desde el DICOM SEG"
+        >
+          Abrir
+        </button>
+      </div>
+      <select
+        className="mpr-segmentation-select"
+        value={selectedSavedSegmentationId}
+        onChange={event => setSelectedSavedSegmentationId(event.target.value)}
+        disabled={segmentationBusy}
+        aria-label="Segmentaciones guardadas"
+      >
+        <option value="">Abrir segmentación guardada…</option>
+        {savedSegmentations.map(object => (
+          <option key={object.id} value={object.id}>
+            v{object.version} · {new Date(object.createdAt).toLocaleString()} · {object.createdBy || 'usuario'}
+            {object.status === 'superseded' ? ' · supersedida' : ''}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+
   const renderAnnotationToolbar = () => {
+    const segmentationControls = voxelSegmentationEnabled
+      ? renderSegmentationControls()
+      : null;
     const toolbar = (
     <div className="mpr-annotation-toolbar">
       <button
@@ -2380,208 +2606,6 @@ const MPRView: React.FC<MPRViewProps> = ({
           {showVolume3D ? '▣ MPR' : '▣ 3D'}
         </button>
       )}
-      {voxelSegmentationEnabled && (
-        <>
-          <button
-            className={`annotation-tool-btn ${activeTool === 'Brush' ? 'active' : ''}`}
-            disabled={!segmentationReady}
-            onClick={() => setVoxelSegmentationTool('Brush')}
-            title="Pincel voxel"
-          >
-            🖌 Brush
-          </button>
-          <button
-            className={`annotation-tool-btn ${activeTool === 'Eraser' ? 'active' : ''}`}
-            disabled={!segmentationReady || regionGrowBusy}
-            onClick={() => setVoxelSegmentationTool('Eraser')}
-            title="Borrar la región segmentada conectada al voxel seleccionado"
-          >
-            ◌ Eraser
-          </button>
-          <button
-            className={`annotation-tool-btn ${activeTool === 'BrushEraser' ? 'active' : ''}`}
-            disabled={!segmentationReady}
-            onClick={() => setVoxelSegmentationTool('BrushEraser')}
-            title="Borrador circular voxel a voxel"
-          >
-            ◌ Circle
-          </button>
-          <button
-            className={`annotation-tool-btn ${activeTool === 'RegionGrow' ? 'active' : ''}`}
-            disabled={!segmentationReady || regionGrowBusy}
-            onClick={() => setVoxelSegmentationTool('RegionGrow')}
-            title="Crecimiento de región desde MPR por valores HU"
-          >
-            {regionGrowBusy ? '… Grow' : '◉ Grow'}
-          </button>
-          {(activeTool === 'RegionGrow' || activeTool === 'Eraser') && (
-            <>
-              <label className="mpr-region-grow-control">
-                <span>HU ±</span>
-                <input
-                  type="number"
-                  min="1"
-                  max="500"
-                  step="1"
-                  value={regionGrowTolerance}
-                  onChange={event => setRegionGrowTolerance(
-                    Math.max(1, Math.min(500, Number(event.target.value) || 1))
-                  )}
-                  disabled={regionGrowBusy}
-                />
-              </label>
-              <label className="mpr-region-grow-control">
-                <span>Conn.</span>
-                <select
-                  value={regionGrowConnectivity}
-                  onChange={event => setRegionGrowConnectivity(
-                    Number(event.target.value) as RegionGrowConnectivity
-                  )}
-                  disabled={regionGrowBusy}
-                >
-                  <option value={6}>6</option>
-                  <option value={18}>18</option>
-                  <option value={26}>26</option>
-                </select>
-              </label>
-              <label className="mpr-region-grow-control">
-                <span>Dist. máx.</span>
-                <input
-                  type="number"
-                  min="1"
-                  max="200"
-                  step="1"
-                  value={regionGrowMaxDistanceMm}
-                  onChange={event => setRegionGrowMaxDistanceMm(
-                    Math.max(1, Math.min(200, Number(event.target.value) || 1))
-                  )}
-                  disabled={regionGrowBusy}
-                  title="Distancia máxima de crecimiento desde la semilla, en milímetros"
-                />
-                <span>mm</span>
-              </label>
-            </>
-          )}
-          <label className="mpr-brush-size-control">
-            <span>Size</span>
-            <input
-              type="range"
-              min="1"
-              max="128"
-              value={brushSize}
-              onChange={event => updateBrushSize(Number(event.target.value))}
-              disabled={!segmentationReady}
-            />
-            <span>{brushSize}</span>
-          </label>
-          <button
-            className={`annotation-tool-btn ${autoInterpolationEnabled ? 'active' : ''}`}
-            disabled={!segmentationReady || interpolationBusy}
-            onClick={() => {
-              setAutoInterpolationEnabled(enabled => !enabled);
-              setInterpolationStatus(null);
-            }}
-            title="Interpolar automáticamente entre cortes pintados en la vista activa"
-          >
-            {interpolationBusy ? '… Interp.' : '↕ Auto'}
-          </button>
-          <button
-            className="annotation-tool-btn"
-            disabled={!segmentationReady}
-            onClick={undoVoxelEdit}
-            title={
-              activeTool === 'RegionGrow'
-                ? 'Deshacer último Grow'
-                : activeTool === 'Eraser'
-                  ? 'Deshacer último Eraser'
-                  : 'Deshacer edición voxel'
-            }
-          >
-            ↶
-          </button>
-          <button
-            className="annotation-tool-btn"
-            disabled={!segmentationReady}
-            onClick={redoVoxelEdit}
-            title={
-              activeTool === 'RegionGrow'
-                ? 'Rehacer último Grow'
-                : activeTool === 'Eraser'
-                  ? 'Rehacer último Eraser'
-                  : 'Rehacer edición voxel'
-            }
-          >
-            ↷
-          </button>
-          <span className="mpr-segmentation-status">
-            {segmentationDirty ? '● unsaved' : '✓ saved'}
-          </span>
-          {autoInterpolationEnabled && interpolationStatus && (
-            <span className="mpr-interpolation-status" title={interpolationStatus}>
-              {interpolationStatus}
-            </span>
-          )}
-          {(activeTool === 'RegionGrow' || activeTool === 'Eraser') && regionGrowStatus && (
-            <span className="mpr-interpolation-status" title={regionGrowStatus}>
-              {regionGrowStatus}
-            </span>
-          )}
-          <span className="mpr-active-segment" title="Estructura voxel activa">
-            <span
-              className="mpr-segment-color"
-              style={{ backgroundColor: activeCtSinusesFeature.color }}
-            />
-            {activeCtSinusesFeature.label}
-          </span>
-          <button
-            className={`annotation-tool-btn ${activeSegmentLocked ? 'active' : ''}`}
-            disabled={!segmentationReady}
-            onClick={toggleActiveSegmentLock}
-            title={activeSegmentLocked ? 'Desbloquear segmento' : 'Bloquear segmento'}
-          >
-            {activeSegmentLocked ? '🔒' : '🔓'}
-          </button>
-          <button
-            className={`annotation-tool-btn ${activeSegmentVisible ? 'active' : ''}`}
-            disabled={!segmentationReady}
-            onClick={toggleActiveSegmentVisibility}
-            title={activeSegmentVisible ? 'Ocultar segmento' : 'Mostrar segmento'}
-          >
-            {activeSegmentVisible ? '◉' : '○'}
-          </button>
-          <button
-            className="annotation-tool-btn"
-            disabled={!segmentationReady || segmentationBusy}
-            onClick={() => void saveVoxelSegmentation()}
-            title="Guardar como nuevo DICOM SEG"
-          >
-            {segmentationBusy ? '…' : '💾 Nueva versión'}
-          </button>
-          <select
-            className="mpr-segmentation-select"
-            value={selectedSavedSegmentationId}
-            onChange={event => setSelectedSavedSegmentationId(event.target.value)}
-            disabled={segmentationBusy}
-            aria-label="Segmentaciones guardadas"
-          >
-            <option value="">Abrir segmentación guardada…</option>
-            {savedSegmentations.map(object => (
-              <option key={object.id} value={object.id}>
-                v{object.version} · {new Date(object.createdAt).toLocaleString()} · {object.createdBy || 'usuario'}
-                {object.status === 'superseded' ? ' · supersedida' : ''}
-              </option>
-            ))}
-          </select>
-          <button
-            className="annotation-tool-btn"
-            disabled={!selectedSavedSegmentationId || !segmentationReady || segmentationBusy}
-            onClick={() => void openSavedSegmentation()}
-            title="Reconstruir el Labelmap desde el DICOM SEG"
-          >
-            Abrir
-          </button>
-        </>
-      )}
       {!voxelSegmentationEnabled && <span className="mpr-readonly-indicator">🔒 {t('viewer.spatialOnly')}</span>}
       {segmentationError && <span className="mpr-segmentation-error">⚠ {segmentationError}</span>}
       {segmentationOperationError && <span className="mpr-segmentation-error">⚠ {segmentationOperationError}</span>}
@@ -2589,11 +2613,27 @@ const MPRView: React.FC<MPRViewProps> = ({
     );
 
     if (annotationToolbarHost) {
-      return createPortal(toolbar, annotationToolbarHost);
+      return (
+        <>
+          {createPortal(toolbar, annotationToolbarHost)}
+          {segmentationControlsHost && segmentationControls &&
+            createPortal(segmentationControls, segmentationControlsHost)}
+        </>
+      );
     }
     // The standalone MPR route has no global viewer header. Keep its local
     // toolbar in that context; embedded MPR uses the global AnnotationToolbar.
-    return embedded ? null : toolbar;
+    if (embedded) {
+      return segmentationControlsHost && segmentationControls
+        ? createPortal(segmentationControls, segmentationControlsHost)
+        : null;
+    }
+    return (
+      <>
+        {toolbar}
+        {segmentationControls}
+      </>
+    );
   };
 
   if (embedded) {

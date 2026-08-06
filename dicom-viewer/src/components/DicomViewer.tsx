@@ -632,6 +632,13 @@ const DicomViewer: React.FC = () => {
                     onFeatureSelect={handleCtSinusesFeatureSelect}
                   />
                 )}
+              {config.ctSinusesMinicatMeasurementsEnabled && isCT && (
+                <div
+                  id="mpr-segmentation-controls-slot"
+                  className="mpr-segmentation-controls-slot"
+                  aria-label="Controles de segmentación voxel"
+                />
+              )}
               <LinesPanel
                 enabled={config.nasalSeptumDeviationEnabled &&
                   isCT}

@@ -779,10 +779,26 @@ select {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
   padding: 2px 4px 8px;
   color: var(--primary-color);
   font-size: 0.9rem;
   font-weight: 700;
+  text-align: left;
+}
+
+.measurements-panel-header:hover {
+  color: var(--text-color);
+}
+
+.measurements-panel-toggle {
+  margin-left: auto;
+  padding: 0 8px;
+  font-size: 1rem;
+  line-height: 1;
 }
 
 .measurements-panel-count {
@@ -2208,6 +2224,82 @@ select {
 
 .mpr-region-grow-control select {
   width: 48px;
+}
+
+.mpr-segmentation-controls-slot {
+  border-bottom: 1px solid var(--border-color);
+}
+
+.mpr-segmentation-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px 8px 12px;
+}
+
+.mpr-segmentation-controls-header {
+  color: var(--primary-color);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.mpr-segmentation-controls-tools,
+.mpr-segmentation-controls-segment,
+.mpr-segmentation-controls-status,
+.mpr-segmentation-grow-settings {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.mpr-segmentation-controls .annotation-tool-btn {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 5px 7px;
+}
+
+.mpr-segmentation-controls .mpr-brush-size-control {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 2px 0;
+}
+
+.mpr-segmentation-controls .mpr-brush-size-control input {
+  flex: 1;
+  min-width: 60px;
+}
+
+.mpr-segmentation-controls .mpr-region-grow-control {
+  flex: 1 1 100%;
+  justify-content: space-between;
+  padding: 2px 0;
+}
+
+.mpr-segmentation-controls .mpr-region-grow-control input,
+.mpr-segmentation-controls .mpr-region-grow-control select {
+  width: 70px;
+}
+
+.mpr-segmentation-controls .mpr-segmentation-status,
+.mpr-segmentation-controls .mpr-interpolation-status {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mpr-segmentation-controls .mpr-active-segment {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mpr-segmentation-controls .mpr-segmentation-select {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
 }
 
 .mpr-segment-color {
