@@ -731,7 +731,7 @@ const MPRView: React.FC<MPRViewProps> = ({
       setRegionGrowStatus(
         toolName === 'Eraser'
           ? 'Un clic sobre un segmento en MPR o 3D para borrarlo · doble clic reservado para zoom'
-          : 'Un clic para crecer · doble clic reservado para zoom'
+          : 'Un clic en MPR para crecer · doble clic reservado para zoom'
       );
       setSegmentationOperationError(null);
       return;
@@ -769,7 +769,7 @@ const MPRView: React.FC<MPRViewProps> = ({
 
     const { TrackballRotateTool } = cornerstoneTools;
     volume3DToolGroup.setToolPassive(TrackballRotateTool.toolName);
-    if (activeTool !== 'RegionGrow' && activeTool !== 'Eraser') {
+    if (activeTool !== 'Eraser') {
       volume3DToolGroup.setToolActive(TrackballRotateTool.toolName, {
         bindings: [{ mouseButton: cornerstoneTools.Enums.MouseBindings.Primary }],
       });
@@ -1050,7 +1050,7 @@ const MPRView: React.FC<MPRViewProps> = ({
   const handleVolume3DClick = useCallback((
     event: React.MouseEvent<HTMLDivElement>
   ) => {
-    if (activeTool !== 'RegionGrow' && activeTool !== 'Eraser') return;
+    if (activeTool !== 'Eraser') return;
 
     const segmentationId = segmentationIdRef.current;
     const renderingEngine = renderingEngineRef.current;
@@ -1100,11 +1100,7 @@ const MPRView: React.FC<MPRViewProps> = ({
     }
 
     setSegmentationOperationError(null);
-    setRegionGrowStatus(
-      activeTool === 'Eraser'
-        ? 'Esperando… doble clic cancela el borrado 3D'
-        : 'Esperando… doble clic cancela el crecimiento 3D'
-    );
+    setRegionGrowStatus('Esperando… doble clic cancela el borrado 3D');
     regionGrowClickTimerRef.current = window.setTimeout(() => {
       regionGrowClickTimerRef.current = null;
       handleRegionGrow(
@@ -1113,7 +1109,7 @@ const MPRView: React.FC<MPRViewProps> = ({
         0,
         0,
         pickedWorldPoint,
-        activeTool === 'Eraser' ? [seedIJK] : undefined
+        [seedIJK]
       );
     }, REGION_GROW_CLICK_DELAY_MS);
   }, [
@@ -2408,7 +2404,7 @@ const MPRView: React.FC<MPRViewProps> = ({
             className={`annotation-tool-btn ${activeTool === 'RegionGrow' ? 'active' : ''}`}
             disabled={!segmentationReady || regionGrowBusy}
             onClick={() => setVoxelSegmentationTool('RegionGrow')}
-            title="Crecimiento de región 3D por valores HU"
+            title="Crecimiento de región desde MPR por valores HU"
           >
             {regionGrowBusy ? '… Grow' : '◉ Grow'}
           </button>
