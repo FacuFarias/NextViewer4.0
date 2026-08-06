@@ -58,6 +58,7 @@ const CORONAL_VIEWPORT_ID = 'mpr-coronal';
 const VOLUME_3D_VIEWPORT_ID = 'mpr-volume-3d';
 const TOOL_GROUP_ID = 'mpr-tool-group';
 const VOLUME_3D_TOOL_GROUP_ID = 'mpr-volume-3d-tool-group';
+const REGION_GROW_CLICK_DELAY_MS = 500;
 
 type ViewportId = 'axial' | 'sagittal' | 'coronal';
 
@@ -454,6 +455,7 @@ const MPRView: React.FC<MPRViewProps> = ({
   const sourceImageIdsRef = useRef<string[]>([]);
   const focusedViewportRef = useRef<ViewportId>('axial');
   const volume3DViewportRef = useRef<HTMLDivElement | null>(null);
+  const regionGrowClickTimerRef = useRef<number | null>(null);
   const lastNativeSliceRef = useRef<number>(nativeImageIndex);
   const synchronizingMprRef = useRef(false);
   const renderingEngineRef = useRef<RenderingEngine | null>(null);
@@ -494,6 +496,28 @@ const MPRView: React.FC<MPRViewProps> = ({
   ) || CT_SINUSES_FEATURES[0];
 
   useEffect(() => {
+    setRegionGrowTolerance(activeCtSinusesFeature.regionGrowToleranceHU);
+    setRegionGrowStatus(null);
+    if (regionGrowClickTimerRef.current !== null) {
+      window.clearTimeout(regionGrowClickTimerRef.current);
+      regionGrowClickTimerRef.current = null;
+    }
+  }, [activeCtSinusesFeature.key, activeCtSinusesFeature.regionGrowToleranceHU]);
+
+  useEffect(() => {
+    if (activeTool !== 'RegionGrow' && regionGrowClickTimerRef.current !== null) {
+      window.clearTimeout(regionGrowClickTimerRef.current);
+      regionGrowClickTimerRef.current = null;
+    }
+  }, [activeTool]);
+
+  useEffect(() => () => {
+    if (regionGrowClickTimerRef.current !== null) {
+      window.clearTimeout(regionGrowClickTimerRef.current);
+    }
+  }, []);
+
+  useEffect(() => {
     if (!embedded) return;
     const host = document.getElementById('mpr-annotation-toolbar-slot');
     setAnnotationToolbarHost(host);
@@ -501,9 +525,16 @@ const MPRView: React.FC<MPRViewProps> = ({
   }, [embedded]);
 
   const handleDoubleClick = useCallback((viewportId: ViewportId) => {
+    if (regionGrowClickTimerRef.current !== null) {
+      window.clearTimeout(regionGrowClickTimerRef.current);
+      regionGrowClickTimerRef.current = null;
+    }
     focusedViewportRef.current = viewportId;
     setMaximizedViewport(prev => prev === viewportId ? null : viewportId);
-  }, []);
+    if (activeTool === 'RegionGrow') {
+      setRegionGrowStatus('Doble clic: zoom aplicado, sin modificar la segmentación');
+    }
+  }, [activeTool]);
 
   useEffect(() => {
     if (isLoading) return;
@@ -614,7 +645,7 @@ const MPRView: React.FC<MPRViewProps> = ({
         toolGroupRef.current?.setToolPassive(candidate);
       });
       setActiveTool(toolName);
-      setRegionGrowStatus('Haz clic en un voxel semilla de cualquier plano MPR');
+      setRegionGrowStatus('Un clic para crecer · doble clic reservado para zoom');
       setSegmentationOperationError(null);
       return;
     }
@@ -657,10 +688,10 @@ const MPRView: React.FC<MPRViewProps> = ({
 
   const handleRegionGrow = useCallback((
     plane: ViewportId,
-    event: React.PointerEvent<HTMLDivElement>
+    element: HTMLDivElement,
+    clientX: number,
+    clientY: number
   ) => {
-    event.preventDefault();
-    event.stopPropagation();
     focusedViewportRef.current = plane;
 
     const segmentationId = segmentationIdRef.current;
@@ -686,7 +717,7 @@ const MPRView: React.FC<MPRViewProps> = ({
         throw new Error('El volumen CT y el Labelmap no tienen la misma geometría');
       }
 
-      const rect = event.currentTarget.getBoundingClientRect();
+      const rect = element.getBoundingClientRect();
       const viewport = renderingEngineRef.current?.getViewport(VIEWPORT_CONFIG[plane].id) as any;
       const canvas = viewport?.canvas;
       if (!canvas || rect.width <= 0 || rect.height <= 0) {
@@ -694,8 +725,8 @@ const MPRView: React.FC<MPRViewProps> = ({
       }
 
       const canvasPoint: [number, number] = [
-        (event.clientX - rect.left) * (canvas.width / rect.width),
-        (event.clientY - rect.top) * (canvas.height / rect.height),
+        (clientX - rect.left) * (canvas.width / rect.width),
+        (clientY - rect.top) * (canvas.height / rect.height),
       ];
       const worldPoint = viewport.canvasToWorld(canvasPoint);
       const seedIJK = csUtils.transformWorldToIndex(
@@ -758,6 +789,31 @@ const MPRView: React.FC<MPRViewProps> = ({
     segmentationReady,
     volumeId,
   ]);
+
+  const handleMprClick = useCallback((
+    plane: ViewportId,
+    event: React.MouseEvent<HTMLDivElement>
+  ) => {
+    if (activeTool !== 'RegionGrow') return;
+
+    const element = event.currentTarget;
+    const { clientX, clientY } = event;
+    if (regionGrowClickTimerRef.current !== null) {
+      // The second click belongs to the double-click zoom gesture. The first
+      // click was deliberately deferred, so neither click paints a seed.
+      window.clearTimeout(regionGrowClickTimerRef.current);
+      regionGrowClickTimerRef.current = null;
+      return;
+    }
+
+    setRegionGrowStatus('Esperando… doble clic hace zoom sin marcar');
+    regionGrowClickTimerRef.current = window.setTimeout(() => {
+      regionGrowClickTimerRef.current = null;
+      if (activeTool === 'RegionGrow') {
+        handleRegionGrow(plane, element, clientX, clientY);
+      }
+    }, REGION_GROW_CLICK_DELAY_MS);
+  }, [activeTool, handleRegionGrow]);
 
   useEffect(() => {
     if (!voxelSegmentationEnabled) {
@@ -1844,12 +1900,10 @@ const MPRView: React.FC<MPRViewProps> = ({
             <div
               ref={element => { viewportRefs.current[plane] = element; }}
               className="mpr-viewport"
-              onPointerDown={event => {
+              onPointerDown={() => {
                 focusedViewportRef.current = plane;
-                if (activeTool === 'RegionGrow') {
-                  handleRegionGrow(plane, event);
-                }
               }}
+              onClick={event => handleMprClick(plane, event)}
               onDoubleClick={() => handleDoubleClick(plane)}
             />
           </div>
