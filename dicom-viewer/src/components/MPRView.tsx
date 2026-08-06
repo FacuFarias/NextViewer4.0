@@ -754,8 +754,11 @@ const MPRView: React.FC<MPRViewProps> = ({
         edgeColor: '#a855f7',
         resolution: 400,
       });
-      actor.setXPlusFaceProperty({ text: 'IZQ', faceColor: '#6d28a9', fontColor: '#f7edff' });
-      actor.setXMinusFaceProperty({ text: 'DER', faceColor: '#6d28a9', fontColor: '#f7edff' });
+      // The VTK marker's X faces are opposite to the sagittal camera mapping
+      // used by this viewer, so swap only these labels to keep the cube
+      // consistent with the working IZQ/DER quick views.
+      actor.setXPlusFaceProperty({ text: 'DER', faceColor: '#6d28a9', fontColor: '#f7edff' });
+      actor.setXMinusFaceProperty({ text: 'IZQ', faceColor: '#6d28a9', fontColor: '#f7edff' });
       actor.setYPlusFaceProperty({ text: 'POST', faceColor: '#4c1d78', fontColor: '#f7edff' });
       actor.setYMinusFaceProperty({ text: 'ANT', faceColor: '#4c1d78', fontColor: '#f7edff' });
       actor.setZPlusFaceProperty({ text: 'SUP', faceColor: '#8b3fc7', fontColor: '#f7edff' });
