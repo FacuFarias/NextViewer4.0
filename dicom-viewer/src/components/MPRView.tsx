@@ -12,6 +12,7 @@ import {
 } from '@cornerstonejs/core';
 import * as cornerstoneTools from '@cornerstonejs/tools';
 import * as polySeg from '@cornerstonejs/polymorphic-segmentation';
+import vtkCellPicker from '@kitware/vtk.js/Rendering/Core/CellPicker';
 import { DicomInstance, DicomSeries } from '../types/dicom';
 import { dicomWebService, mergeDefinedDicomMetadata } from '../services/dicomWeb';
 import { localizeError, useTranslation } from '../i18n';
@@ -110,6 +111,65 @@ const VIEWPORT_CONFIG: Record<ViewportId, {
 const VIEWPORT_ORDER: ViewportId[] = ['axial', 'sagittal', 'coronal'];
 const MPR_VIEWPORT_IDS = VIEWPORT_ORDER.map(plane => VIEWPORT_CONFIG[plane].id);
 const ALL_VIEWPORT_IDS = [...MPR_VIEWPORT_IDS, VOLUME_3D_VIEWPORT_ID];
+
+function getLabelmapOffset(
+  dimensions: [number, number, number],
+  i: number,
+  j: number,
+  k: number
+): number {
+  return i + dimensions[0] * (j + dimensions[1] * k);
+}
+
+function findClosestActiveLabelmapVoxel(
+  imageData: any,
+  dimensions: [number, number, number],
+  scalarData: Uint8Array,
+  segmentIndex: number,
+  worldPoint: [number, number, number],
+  maxIndexRadius = 3
+): [number, number, number] | null {
+  const continuousIJK = csUtils.transformWorldToIndexContinuous(imageData, worldPoint);
+  if (!continuousIJK?.every(Number.isFinite)) return null;
+
+  const center: [number, number, number] = [
+    Math.round(continuousIJK[0]),
+    Math.round(continuousIJK[1]),
+    Math.round(continuousIJK[2]),
+  ];
+  let closest: [number, number, number] | null = null;
+  let closestDistance = Number.POSITIVE_INFINITY;
+
+  for (let dk = -maxIndexRadius; dk <= maxIndexRadius; dk += 1) {
+    for (let dj = -maxIndexRadius; dj <= maxIndexRadius; dj += 1) {
+      for (let di = -maxIndexRadius; di <= maxIndexRadius; di += 1) {
+        const i = center[0] + di;
+        const j = center[1] + dj;
+        const k = center[2] + dk;
+        if (
+          i < 0 || i >= dimensions[0] ||
+          j < 0 || j >= dimensions[1] ||
+          k < 0 || k >= dimensions[2]
+        ) continue;
+
+        if (scalarData[getLabelmapOffset(dimensions, i, j, k)] !== segmentIndex) continue;
+        const candidateIJK: [number, number, number] = [i, j, k];
+        const candidateWorld = imageData.indexToWorld?.(candidateIJK) as number[] | undefined;
+        const distance = candidateWorld?.length === 3
+          ? (candidateWorld[0] - worldPoint[0]) ** 2 +
+            (candidateWorld[1] - worldPoint[1]) ** 2 +
+            (candidateWorld[2] - worldPoint[2]) ** 2
+          : di ** 2 + dj ** 2 + dk ** 2;
+        if (distance < closestDistance) {
+          closestDistance = distance;
+          closest = candidateIJK;
+        }
+      }
+    }
+  }
+
+  return closest;
+}
 
 const mprImagePlaneMetadata = new Map<string, Record<string, any>>();
 let mprMetadataProviderRegistered = false;
@@ -524,7 +584,7 @@ const MPRView: React.FC<MPRViewProps> = ({
   }, [activeCtSinusesFeature.key, activeCtSinusesFeature.regionGrowToleranceHU]);
 
   useEffect(() => {
-    if (activeTool !== 'RegionGrow' && regionGrowClickTimerRef.current !== null) {
+    if (activeTool !== 'RegionGrow' && activeTool !== 'Eraser' && regionGrowClickTimerRef.current !== null) {
       window.clearTimeout(regionGrowClickTimerRef.current);
       regionGrowClickTimerRef.current = null;
     }
@@ -670,7 +730,7 @@ const MPRView: React.FC<MPRViewProps> = ({
       setActiveTool(toolName);
       setRegionGrowStatus(
         toolName === 'Eraser'
-          ? 'Un clic sobre un segmento para borrarlo · doble clic reservado para zoom'
+          ? 'Un clic sobre un segmento en MPR o 3D para borrarlo · doble clic reservado para zoom'
           : 'Un clic para crecer · doble clic reservado para zoom'
       );
       setSegmentationOperationError(null);
@@ -702,6 +762,19 @@ const MPRView: React.FC<MPRViewProps> = ({
       cornerstoneTools.BrushTool.toolName
     );
   }, []);
+
+  useEffect(() => {
+    const volume3DToolGroup = volume3DToolGroupRef.current;
+    if (!volume3DToolGroup) return;
+
+    const { TrackballRotateTool } = cornerstoneTools;
+    volume3DToolGroup.setToolPassive(TrackballRotateTool.toolName);
+    if (activeTool !== 'RegionGrow' && activeTool !== 'Eraser') {
+      volume3DToolGroup.setToolActive(TrackballRotateTool.toolName, {
+        bindings: [{ mouseButton: cornerstoneTools.Enums.MouseBindings.Primary }],
+      });
+    }
+  }, [activeTool, segmentationReady, showVolume3D]);
 
   const applyRegionGrowHistory = useCallback((
     entry: RegionGrowHistoryEntry,
@@ -787,7 +860,9 @@ const MPRView: React.FC<MPRViewProps> = ({
     plane: ViewportId,
     element: HTMLDivElement,
     clientX: number,
-    clientY: number
+    clientY: number,
+    worldPointOverride?: [number, number, number],
+    eraseSeedIJKsOverride?: Array<[number, number, number]>
   ) => {
     focusedViewportRef.current = plane;
 
@@ -815,25 +890,28 @@ const MPRView: React.FC<MPRViewProps> = ({
         throw new Error('El volumen CT y el Labelmap no tienen la misma geometría');
       }
 
-      const rect = element.getBoundingClientRect();
       const viewport = renderingEngineRef.current?.getViewport(VIEWPORT_CONFIG[plane].id) as any;
-      const canvas = viewport?.canvas;
-      if (!canvas || rect.width <= 0 || rect.height <= 0) {
-        throw new Error('El viewport MPR todavía no tiene un canvas válido');
-      }
+      let worldPoint = worldPointOverride;
+      if (!worldPoint) {
+        const rect = element.getBoundingClientRect();
+        const canvas = viewport?.canvas;
+        if (!canvas || rect.width <= 0 || rect.height <= 0) {
+          throw new Error('El viewport MPR todavía no tiene un canvas válido');
+        }
 
-      const canvasPoint: [number, number] = [
-        (clientX - rect.left) * (canvas.width / rect.width),
-        (clientY - rect.top) * (canvas.height / rect.height),
-      ];
-      const worldPoint = viewport.canvasToWorld(canvasPoint);
+        const canvasPoint: [number, number] = [
+          (clientX - rect.left) * (canvas.width / rect.width),
+          (clientY - rect.top) * (canvas.height / rect.height),
+        ];
+        worldPoint = viewport.canvasToWorld(canvasPoint) as [number, number, number];
+      }
       const seedIJK = csUtils.transformWorldToIndex(
         labelmap.volume.imageData,
         worldPoint
       ) as [number, number, number];
       const sourceScalarData = sourceVolume.voxelManager.getCompleteScalarDataArray();
-      let eraseSeedIJKs: Array<[number, number, number]> | undefined;
-      if (eraseMode) {
+      let eraseSeedIJKs: Array<[number, number, number]> | undefined = eraseSeedIJKsOverride;
+      if (eraseMode && !eraseSeedIJKsOverride) {
         const centerIJK = csUtils.transformWorldToIndexContinuous(
           labelmap.volume.imageData,
           worldPoint
@@ -934,6 +1012,7 @@ const MPRView: React.FC<MPRViewProps> = ({
       console.info('[MPR][RegionGrow] completed', {
         segmentationId,
         plane,
+        source: worldPointOverride ? '3d' : 'mpr',
         mode: eraseMode ? 'erase' : 'grow',
         seedIJK,
         segmentIndex: activeCtSinusesFeature.segmentIndex,
@@ -966,6 +1045,82 @@ const MPRView: React.FC<MPRViewProps> = ({
     regionGrowTolerance,
     segmentationReady,
     volumeId,
+  ]);
+
+  const handleVolume3DClick = useCallback((
+    event: React.MouseEvent<HTMLDivElement>
+  ) => {
+    if (activeTool !== 'RegionGrow' && activeTool !== 'Eraser') return;
+
+    const segmentationId = segmentationIdRef.current;
+    const renderingEngine = renderingEngineRef.current;
+    const viewport = renderingEngine?.getViewport(VOLUME_3D_VIEWPORT_ID) as any;
+    const canvas = viewport?.canvas;
+    const renderer = viewport?.getRenderer?.();
+    if (!segmentationId || !segmentationReady || !canvas || !renderer) {
+      setSegmentationOperationError('El viewport 3D todavía no está listo para seleccionar voxels.');
+      return;
+    }
+
+    const rect = event.currentTarget.getBoundingClientRect();
+    const element = event.currentTarget;
+    if (rect.width <= 0 || rect.height <= 0 || canvas.width <= 0 || canvas.height <= 0) return;
+
+    const canvasX = (event.clientX - rect.left) * (canvas.width / rect.width);
+    const canvasY = (rect.bottom - event.clientY) * (canvas.height / rect.height);
+    const picker = vtkCellPicker.newInstance({ tolerance: 0.005 });
+    picker.pick([canvasX, canvasY, 0], renderer);
+    const pickedPositions = picker.getPickedPositions?.() || [];
+    const pickedWorldPoint = pickedPositions[0] as [number, number, number] | undefined;
+    if (!pickedWorldPoint || pickedWorldPoint.length < 3 || !pickedWorldPoint.every(Number.isFinite)) {
+      setSegmentationOperationError('No se seleccionó una superficie de la segmentación 3D.');
+      return;
+    }
+
+    const labelmap = getMinicatLabelmapData(segmentationId);
+    const seedIJK = findClosestActiveLabelmapVoxel(
+      labelmap.volume?.imageData,
+      labelmap.dimensions,
+      labelmap.scalarData,
+      activeCtSinusesFeature.segmentIndex,
+      pickedWorldPoint
+    );
+    if (!seedIJK) {
+      setSegmentationOperationError(
+        'La superficie seleccionada no pertenece al segmento activo. Seleccioná primero esa estructura.'
+      );
+      return;
+    }
+
+    if (regionGrowClickTimerRef.current !== null) {
+      window.clearTimeout(regionGrowClickTimerRef.current);
+      regionGrowClickTimerRef.current = null;
+      setRegionGrowStatus('Doble clic: selección 3D cancelada sin modificar la segmentación');
+      return;
+    }
+
+    setSegmentationOperationError(null);
+    setRegionGrowStatus(
+      activeTool === 'Eraser'
+        ? 'Esperando… doble clic cancela el borrado 3D'
+        : 'Esperando… doble clic cancela el crecimiento 3D'
+    );
+    regionGrowClickTimerRef.current = window.setTimeout(() => {
+      regionGrowClickTimerRef.current = null;
+      handleRegionGrow(
+        focusedViewportRef.current,
+        element,
+        0,
+        0,
+        pickedWorldPoint,
+        activeTool === 'Eraser' ? [seedIJK] : undefined
+      );
+    }, REGION_GROW_CLICK_DELAY_MS);
+  }, [
+    activeCtSinusesFeature.segmentIndex,
+    activeTool,
+    handleRegionGrow,
+    segmentationReady,
   ]);
 
   const handleMprClick = useCallback((
@@ -2451,6 +2606,7 @@ const MPRView: React.FC<MPRViewProps> = ({
               ref={volume3DViewportRef}
               className="mpr-viewport"
               onPointerDown={() => setShowVolume3D(true)}
+              onClick={handleVolume3DClick}
             />
           </div>
         </div>
@@ -2505,6 +2661,7 @@ const MPRView: React.FC<MPRViewProps> = ({
             ref={volume3DViewportRef}
             className="mpr-viewport"
             onPointerDown={() => setShowVolume3D(true)}
+            onClick={handleVolume3DClick}
           />
         </div>
       </div>
