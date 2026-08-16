@@ -149,25 +149,24 @@ services:
 
 ### Conexión a dcm4chee
 
-Edita `src/services/dicomWeb.ts`:
+El visor usa el proxy DICOMweb definido en `nginx.conf`. No se configuran ni se
+almacenan credenciales de dcm4chee en el navegador: todas las solicitudes envían
+el access token del usuario autenticado.
 
-```typescript
-const DEFAULT_CONFIG: DicomWebConfig = {
-  baseUrl: '/dcm4chee-arc/aets/DCM4CHEE/rs',
-  wadoUrl: '/dcm4chee-arc/aets/DCM4CHEE/wado',
-  username: 'admin',
-  password: 'tu-password',
-};
-```
+La URL base se puede definir con `VITE_DCM4CHEE_BASE_URL` al compilar la imagen.
 
 ### Autenticación Keycloak
 
-Edita `src/services/auth.ts`:
+Todas las rutas requieren una sesión Keycloak. La pantalla de acceso usa el cliente
+configurado en `VITE_KEYCLOAK_CLIENT_ID`; ese cliente debe permitir Direct Access
+Grants. Los tokens se conservan solamente en `sessionStorage`, se renuevan con el
+refresh token y se eliminan al cerrar sesión.
 
-```typescript
-const KEYCLOAK_URL = '/auth/realms/dcm4che/protocol/openid-connect/token';
-const CLIENT_ID = 'dicom-viewer';
-```
+`report-service` también valida el Bearer token y debe ejecutarse con
+`AUTH_REQUIRED=true`. El rol `admin` concede los permisos administrativos y el rol
+`segmentation-worker` autoriza exclusivamente los endpoints del worker. Para un
+worker externo se recomienda un cliente confidencial con Service Accounts y Client
+Credentials, no la cuenta interactiva de un administrador.
 
 ### Variables de Entorno
 
@@ -175,7 +174,7 @@ Crea un archivo `.env`:
 
 ```env
 VITE_DCM4CHEE_BASE_URL=/dcm4chee-arc/aets/DCM4CHEE/rs
-VITE_KEYCLOAK_URL=/auth/realms/dcm4che/protocol/openid-connect/token
+VITE_KEYCLOAK_CLIENT_ID=dcm4chee-arc-ui
 ```
 
 ## Estructura del Proyecto
@@ -222,8 +221,8 @@ dicom-viewer/
 
 | Ruta | Descripción | Acceso |
 |------|-------------|--------|
-| `/` | Lista de estudios | Público |
-| `/viewer/:studyInstanceUID` | Visor de estudio | Público |
+| `/` | Lista de estudios | Usuario autenticado |
+| `/viewer/:studyInstanceUID` | Visor de estudio | Usuario autenticado |
 | `/config` | Configuración | Admin solamente |
 
 ## Herramientas de Desarrollo
@@ -265,6 +264,66 @@ El archivo DICOM SEG se almacena en el PACS. La API de reportes conserva únicam
 | `POST /report-api/segmentation-objects` | Registrar una nueva versión DICOM SEG |
 | `GET /report-api/segmentation-objects/:id` | Obtener metadatos de una segmentación |
 | `PATCH /report-api/segmentation-objects/:id` | Actualizar nombre, descripción o estado |
+
+### Cola de generación DICOM SEG
+
+El `report-service` mantiene una cola persistente para modelos 3D externos. Los usuarios
+encolan una serie CT desde la lista de estudios y los workers autenticados con el rol
+Keycloak `segmentation-worker` reclaman jobs con lease. Los DICOM fuente y resultados se
+transfieren mediante URLs S3 prefirmadas; el SEG terminado se publica también en dcm4chee.
+
+| Endpoint | Descripción |
+|----------|-------------|
+| `POST /report-api/segmentation-status/query` | Consultar el estado SEG de varios estudios |
+| `POST /report-api/segmentation-jobs` | Encolar estudios/series CT |
+| `GET /report-api/segmentation-jobs/:id` | Consultar job e intentos |
+| `GET /report-api/segmentation-metrics` | Profundidad, antigüedad, errores y leases vencidos |
+| `POST /report-api/worker/segmentation-jobs/claim` | Reclamar un lote con lease |
+| `POST /report-api/worker/segmentation-jobs/:id/heartbeat` | Renovar lease y reportar progreso |
+| `GET /report-api/worker/segmentation-jobs/:id/input-manifest` | Renovar URLs de entrada |
+| `POST /report-api/worker/segmentation-jobs/:id/output-upload-url` | Reservar la subida S3 |
+| `POST /report-api/worker/segmentation-jobs/:id/complete` | Verificar, publicar y registrar el SEG |
+| `POST /report-api/worker/segmentation-jobs/:id/fail` | Reportar un fallo reintentable o terminal |
+| `GET /report-api/reference-studies` | Listar el catálogo S3 por accession y Study UID |
+| `GET /report-api/reference-studies/:id` | Consultar SEG, segmentos, mediciones e importación |
+| `POST /report-api/reference-studies/:id/pull` | Encolar un estudio para publicación STOW-RS en dcm4chee |
+| `POST /report-api/reference-studies/pull-batch` | Encolar hasta 20 estudios seleccionados en un lote |
+| `GET /report-api/reference-import-jobs/:id` | Consultar progreso del pull a dcm4chee |
+
+El worker debe enviar el lease en `X-Segmentation-Lease-Token`. El checksum de subida es
+SHA-256 en Base64, tal como lo espera `x-amz-checksum-sha256`. Después de compilar el
+servicio, los SEG históricos se importan de forma idempotente con:
+
+```bash
+npm run reconcile:segmentations
+```
+
+La configuración completa de S3, PACS, leases y credenciales de servicio está documentada
+en `report-service/.env.example`; el contrato del worker y la secuencia de limpieza están
+en `documentation/SEGMENTATION_BATCH_API.md`.
+
+### Reference Storage
+
+La ruta administrativa `/reference-storage` presenta los estudios anonimizados de S3.
+Cada carpeta `OP-*` se registra en `ia.reference_study` con su Study Instance UID leído
+del encabezado DICOM, conteo de objetos, tamaño y trazabilidad de escaneo. La vista deriva
+los SEG y su origen desde `ia.segmentation_object`, y resume por separado las mediciones
+de `ia.annotation` y los segmentos contenidos en el DICOM SEG.
+
+El catálogo se puede reconstruir de forma idempotente con:
+
+```bash
+npm run build
+npm run sync:reference-storage
+```
+
+La acción `Pull a PACS` crea un job persistente en `ia.reference_import_job`, descarga
+solo ese accession desde S3, publica los DICOM por lotes mediante STOW-RS y confirma el
+Study Instance UID con QIDO. `report-service` usa un cliente confidencial de Keycloak
+mediante Client Credentials; el secreto no se entrega al navegador.
+
+La consulta `GET /report-api/reference-studies` acepta `search`, `seg`, `limit` y `offset`;
+`limit` está acotado a 20 y la búsqueda/filtros se aplican en PostgreSQL antes de paginar.
 
 ## Configuración de Features
 

@@ -1,11 +1,16 @@
-import React, { useEffect, useState, useMemo } from 'react';
-import { DicomStudy } from '../types/dicom';
+import React, { useCallback, useEffect, useState, useMemo } from 'react';
+import { DicomSeries, DicomStudy } from '../types/dicom';
 import type { PreloadQueueState, PreloadQueueItem } from '../services/preloadQueue';
 import { annotationService } from '../services/annotations';
+import { dicomWebService } from '../services/dicomWeb';
+import { segmentationJobService } from '../services/segmentationJobs';
+import { segmentationObjectService } from '../services/segmentationObjects';
+import type { StudySegmentationStatus } from '../types/segmentationJobs';
 import { useTranslation } from '../i18n';
 
 type MeasurementFilter = 'all' | 'with' | 'without';
 type MeasurementStatus = 'loading' | 'with' | 'without' | 'error';
+type SegmentationFilter = 'all' | 'with' | 'without' | 'processing' | 'failed';
 
 interface StudyMeasurementStatus {
   status: MeasurementStatus;
@@ -24,6 +29,7 @@ interface StudyBrowserProps {
 }
 
 const MODALITIES = ['CT', 'MR', 'DX', 'US', 'MG', 'CR', 'NM', 'PT', 'XA', 'RF'];
+const PAGE_SIZE = 20;
 
 const StudyBrowser: React.FC<StudyBrowserProps> = ({
   studies,
@@ -40,8 +46,20 @@ const StudyBrowser: React.FC<StudyBrowserProps> = ({
   const [selectedModality, setSelectedModality] = useState<string>('');
   const [measurementFilter, setMeasurementFilter] = useState<MeasurementFilter>('all');
   const [measurementStatuses, setMeasurementStatuses] = useState<Record<string, StudyMeasurementStatus>>({});
+  const [segmentationFilter, setSegmentationFilter] = useState<SegmentationFilter>('all');
+  const [segmentationStatuses, setSegmentationStatuses] = useState<Record<string, StudySegmentationStatus>>({});
+  const [selectedStudyUIDs, setSelectedStudyUIDs] = useState<Set<string>>(new Set());
+  const [segmentationDialogOpen, setSegmentationDialogOpen] = useState(false);
+  const [eligibleSeries, setEligibleSeries] = useState<Record<string, DicomSeries[]>>({});
+  const [selectedSeriesUIDs, setSelectedSeriesUIDs] = useState<Record<string, string>>({});
+  const [segmentationDialogBusy, setSegmentationDialogBusy] = useState(false);
+  const [segmentationDialogError, setSegmentationDialogError] = useState<string | null>(null);
+  const [expandedSegmentationUID, setExpandedSegmentationUID] = useState<string | null>(null);
   const [sortField, setSortField] = useState<'studyDate' | 'patientName' | 'modality'>('studyDate');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
+  const [page, setPage] = useState(0);
+  const [pushingSegmentationUIDs, setPushingSegmentationUIDs] = useState<Set<string>>(new Set());
+  const [pushSegmentationError, setPushSegmentationError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -88,6 +106,28 @@ const StudyBrowser: React.FC<StudyBrowserProps> = ({
     return () => { cancelled = true; };
   }, [studies]);
 
+  const loadSegmentationStatuses = useCallback(async () => {
+    try {
+      const items = await segmentationJobService.statuses(studies.map(study => study.studyInstanceUID));
+      setSegmentationStatuses(Object.fromEntries(items.map(item => [item.studyInstanceUID, item])));
+    } catch (error) {
+      console.warn('[Studies] No se pudieron consultar los estados SEG', error);
+    }
+  }, [studies]);
+
+  useEffect(() => {
+    void loadSegmentationStatuses();
+  }, [loadSegmentationStatuses]);
+
+  useEffect(() => {
+    const hasActiveJobs = Object.values(segmentationStatuses).some(status =>
+      status.activeJobId || status.state === 'queued' || status.state === 'processing'
+    );
+    if (!hasActiveJobs) return undefined;
+    const interval = window.setInterval(() => void loadSegmentationStatuses(), 10_000);
+    return () => window.clearInterval(interval);
+  }, [segmentationStatuses, loadSegmentationStatuses]);
+
   const filteredStudies = useMemo(() => {
     let filtered = studies.filter((study) => {
       const matchesSearch = !searchTerm || 
@@ -108,7 +148,14 @@ const StudyBrowser: React.FC<StudyBrowserProps> = ({
       const matchesMeasurement = measurementFilter === 'all' ||
         studyMeasurementStatus === measurementFilter;
 
-      return matchesSearch && matchesModality && matchesMeasurement;
+      const segmentation = segmentationStatuses[study.studyInstanceUID];
+      const matchesSegmentation = segmentationFilter === 'all' ||
+        (segmentationFilter === 'with' && Boolean(segmentation?.hasSeg)) ||
+        (segmentationFilter === 'without' && (!segmentation || segmentation.state === 'without_seg')) ||
+        (segmentationFilter === 'processing' && Boolean(segmentation?.activeJobId)) ||
+        (segmentationFilter === 'failed' && segmentation?.state === 'failed');
+
+      return matchesSearch && matchesModality && matchesMeasurement && matchesSegmentation;
     });
 
     filtered.sort((a, b) => {
@@ -128,7 +175,15 @@ const StudyBrowser: React.FC<StudyBrowserProps> = ({
     });
 
     return filtered;
-  }, [studies, searchTerm, selectedModality, measurementFilter, measurementStatuses, sortField, sortDirection]);
+  }, [studies, searchTerm, selectedModality, measurementFilter, measurementStatuses,
+    segmentationFilter, segmentationStatuses, sortField, sortDirection]);
+
+  useEffect(() => { setPage(0); }, [searchTerm, selectedModality, measurementFilter, segmentationFilter, sortField, sortDirection]);
+
+  const pageCount = Math.max(1, Math.ceil(filteredStudies.length / PAGE_SIZE));
+  const visibleStudies = filteredStudies.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  const visibleSelected = visibleStudies.filter(study => selectedStudyUIDs.has(study.studyInstanceUID));
+  const allVisibleSelected = visibleStudies.length > 0 && visibleSelected.length === visibleStudies.length;
 
   const handleSort = (field: 'studyDate' | 'patientName' | 'modality') => {
     if (sortField === field) {
@@ -180,11 +235,106 @@ const StudyBrowser: React.FC<StudyBrowserProps> = ({
     return t('studies.notAvailable');
   };
 
+  const getSegmentationLabel = (studyInstanceUID: string): string => {
+    const status = segmentationStatuses[studyInstanceUID];
+    if (!status) return t('studies.segQuerying');
+    if (status.hasSeg) {
+      const base = t('studies.segWith', { count: status.segmentationCount });
+      return status.activeJobId ? `${base} · ${t('studies.segUpdating')}` : base;
+    }
+    if (status.state === 'queued') return t('studies.segQueued');
+    if (status.state === 'processing') return t('studies.segProcessing');
+    if (status.state === 'failed') return t('studies.segFailed');
+    return t('studies.segWithout');
+  };
+
+  const pushSegmentation = async (study: DicomStudy) => {
+    const objectId = segmentationStatuses[study.studyInstanceUID]?.latestSegmentationObjectId;
+    if (!objectId) return;
+    setPushSegmentationError(null);
+    setPushingSegmentationUIDs(current => new Set(current).add(study.studyInstanceUID));
+    try {
+      await segmentationObjectService.pushToS3(objectId);
+    } catch (error) {
+      console.error('[Studies] No se pudo enviar el SEG a S3', error);
+      setPushSegmentationError(error instanceof Error ? error.message : 'No se pudo enviar el SEG a S3');
+    } finally {
+      setPushingSegmentationUIDs(current => {
+        const next = new Set(current); next.delete(study.studyInstanceUID); return next;
+      });
+    }
+  };
+
+  const toggleStudySelection = (studyInstanceUID: string) => {
+    setSelectedStudyUIDs(current => {
+      const next = new Set(current);
+      next.has(studyInstanceUID) ? next.delete(studyInstanceUID) : next.add(studyInstanceUID);
+      return next;
+    });
+  };
+
+  const openSegmentationDialog = async () => {
+    const selected = studies.filter(study => selectedStudyUIDs.has(study.studyInstanceUID));
+    if (!selected.length) return;
+    setSegmentationDialogOpen(true);
+    setSegmentationDialogBusy(true);
+    setSegmentationDialogError(null);
+    setEligibleSeries({});
+    setSelectedSeriesUIDs({});
+    try {
+      const entries = await Promise.all(selected.map(async study => {
+        const series = (await dicomWebService.getStudySeries(study.studyInstanceUID))
+          .filter(item => item.modality.toUpperCase() === 'CT');
+        return [study.studyInstanceUID, series] as const;
+      }));
+      const byStudy = Object.fromEntries(entries);
+      setEligibleSeries(byStudy);
+      setSelectedSeriesUIDs(Object.fromEntries(entries
+        .filter(([, series]) => series.length === 1)
+        .map(([studyUID, series]) => [studyUID, series[0].seriesInstanceUID])));
+    } catch (error) {
+      setSegmentationDialogError(error instanceof Error ? error.message : t('studies.segSeriesError'));
+    } finally { setSegmentationDialogBusy(false); }
+  };
+
+  const enqueueSegmentations = async () => {
+    const items = Array.from(selectedStudyUIDs).map(studyInstanceUID => ({
+      studyInstanceUID,
+      sourceSeriesInstanceUID: selectedSeriesUIDs[studyInstanceUID],
+    }));
+    if (items.some(item => !item.sourceSeriesInstanceUID)) {
+      setSegmentationDialogError(t('studies.segSelectAllSeries')); return;
+    }
+    setSegmentationDialogBusy(true);
+    setSegmentationDialogError(null);
+    try {
+      await segmentationJobService.enqueue({
+        items,
+        modelName: import.meta.env.VITE_SEGMENTATION_MODEL_NAME || 'minicat-3d',
+        modelVersion: import.meta.env.VITE_SEGMENTATION_MODEL_VERSION || '1',
+        idempotencyKey: crypto.randomUUID(),
+      });
+      setSegmentationDialogOpen(false);
+      setSelectedStudyUIDs(new Set());
+      await loadSegmentationStatuses();
+    } catch (error) {
+      setSegmentationDialogError(error instanceof Error ? error.message : t('studies.segEnqueueError'));
+    } finally { setSegmentationDialogBusy(false); }
+  };
+
   return (
     <div className="study-browser">
       <div className="study-browser-header">
         <h2>{t('studies.title')}</h2>
         <div className="study-browser-header-actions">
+          <button
+            className="segmentation-generate-btn"
+            onClick={() => void openSegmentationDialog()}
+            disabled={selectedStudyUIDs.size === 0}
+            title={t('studies.segGenerateTitle')}
+          >
+            ◈ {t('studies.segGenerate', { count: selectedStudyUIDs.size })}
+          </button>
           {queueItems.length > 0 && (
             <button
               className="clear-preload-btn"
@@ -200,17 +350,19 @@ const StudyBrowser: React.FC<StudyBrowserProps> = ({
             disabled={isLoading || filteredStudies.length === 0}
             title={t('studies.preloadListTitle')}
           >
-            ⬇ {t('studies.preloadList', { count: filteredStudies.length })}
+            {t('studies.preloadList', { count: filteredStudies.length })}
           </button>
-          <button className="refresh-btn" onClick={onRefresh} disabled={isLoading}>
-          {isLoading ? '⟳' : '↻'} {t('studies.refresh')}
+          <button className="refresh-btn" onClick={() => {
+            onRefresh();
+            void loadSegmentationStatuses();
+          }} disabled={isLoading}>
+          {t('studies.refresh')}
           </button>
         </div>
       </div>
 
       <div className="study-browser-filters">
         <div className="search-box">
-          <span className="search-icon">🔍</span>
           <input
             type="text"
             placeholder={t('studies.searchPlaceholder')}
@@ -257,6 +409,24 @@ const StudyBrowser: React.FC<StudyBrowserProps> = ({
             </button>
           ))}
         </div>
+        <div className="measurement-filters" aria-label={t('studies.filterSeg')}>
+          <span className="measurement-filter-label">SEG:</span>
+          {([
+            ['all', 'studies.all'],
+            ['with', 'studies.segFilterWith'],
+            ['without', 'studies.segFilterWithout'],
+            ['processing', 'studies.segFilterProcessing'],
+            ['failed', 'studies.segFilterFailed'],
+          ] as const).map(([value, labelKey]) => (
+            <button
+              key={value}
+              className={`measurement-filter-chip ${segmentationFilter === value ? 'active' : ''}`}
+              onClick={() => setSegmentationFilter(value)}
+            >
+              {t(labelKey)}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="study-browser-stats">
@@ -271,6 +441,7 @@ const StudyBrowser: React.FC<StudyBrowserProps> = ({
           </span>
         )}
       </div>
+      {pushSegmentationError && <div className="segmentation-study-detail-error study-push-error">{pushSegmentationError}</div>}
 
       <div className="study-table-container">
         {isLoading && studies.length === 0 ? (
@@ -281,13 +452,14 @@ const StudyBrowser: React.FC<StudyBrowserProps> = ({
         ) : filteredStudies.length === 0 ? (
           <div className="empty-state">
             <p>{t('studies.empty')}</p>
-            {(searchTerm || selectedModality || measurementFilter !== 'all') && (
+            {(searchTerm || selectedModality || measurementFilter !== 'all' || segmentationFilter !== 'all') && (
               <button
                 className="clear-filters-btn"
                 onClick={() => {
                   setSearchTerm('');
                   setSelectedModality('');
                   setMeasurementFilter('all');
+                  setSegmentationFilter('all');
                 }}
               >
                 {t('studies.clearFilters')}
@@ -298,6 +470,20 @@ const StudyBrowser: React.FC<StudyBrowserProps> = ({
           <table className="study-table">
             <thead>
               <tr>
+                <th className="study-select-cell">
+                  <input
+                    type="checkbox"
+                    checked={allVisibleSelected}
+                    onChange={() => setSelectedStudyUIDs(current => {
+                      const next = new Set(current);
+                      visibleStudies.forEach(study => allVisibleSelected
+                        ? next.delete(study.studyInstanceUID)
+                        : next.add(study.studyInstanceUID));
+                      return next;
+                    })}
+                    aria-label={t('studies.segSelectVisible')}
+                  />
+                </th>
                 <th onClick={() => handleSort('patientName')} className="sortable">
                   {t('studies.patient')} {getSortIcon('patientName')}
                 </th>
@@ -311,17 +497,26 @@ const StudyBrowser: React.FC<StudyBrowserProps> = ({
                 <th>{t('studies.description')}</th>
                 <th>{t('studies.accession')}</th>
                 <th>{t('studies.measurements')}</th>
+                <th>SEG</th>
                 <th>{t('studies.preload')}</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
-              {filteredStudies.map((study) => (
+              {visibleStudies.map((study) => (
                 <tr
                   key={study.studyInstanceUID}
                   className="study-row"
                   onClick={() => onStudySelect(study)}
                 >
+                  <td className="study-select-cell" onClick={event => event.stopPropagation()}>
+                    <input
+                      type="checkbox"
+                      checked={selectedStudyUIDs.has(study.studyInstanceUID)}
+                      onChange={() => toggleStudySelection(study.studyInstanceUID)}
+                      aria-label={t('studies.segSelectStudy', { study: study.patientName || study.studyInstanceUID })}
+                    />
+                  </td>
                   <td className="patient-name-cell">
                     <div className="patient-name-content">
                       <span className="patient-name">{study.patientName || t('common.noName')}</span>
@@ -343,6 +538,27 @@ const StudyBrowser: React.FC<StudyBrowserProps> = ({
                     >
                       {getMeasurementLabel(study.studyInstanceUID)}
                     </span>
+                  </td>
+                  <td className="segmentation-status-cell" title={segmentationStatuses[study.studyInstanceUID]?.lastError || ''}
+                    onClick={event => event.stopPropagation()}>
+                    <span className={`segmentation-study-status segmentation-study-status-${segmentationStatuses[study.studyInstanceUID]?.state || 'loading'}`}>
+                      {getSegmentationLabel(study.studyInstanceUID)}
+                    </span>
+                    {(segmentationStatuses[study.studyInstanceUID]?.activeJobId || segmentationStatuses[study.studyInstanceUID]?.lastError) && (
+                      <button className="segmentation-study-detail-btn" onClick={() => setExpandedSegmentationUID(current =>
+                        current === study.studyInstanceUID ? null : study.studyInstanceUID)} aria-label={t('studies.segDetails')}>ⓘ</button>
+                    )}
+                    {expandedSegmentationUID === study.studyInstanceUID && segmentationStatuses[study.studyInstanceUID] && (
+                      <div className="segmentation-study-detail">
+                        {segmentationStatuses[study.studyInstanceUID].activeJobId && (
+                          <><div>{segmentationStatuses[study.studyInstanceUID].stage || t('studies.segProcessing')} · {Math.round(segmentationStatuses[study.studyInstanceUID].progress || 0)}%</div>
+                          <small>Job {segmentationStatuses[study.studyInstanceUID].activeJobId}</small></>
+                        )}
+                        {segmentationStatuses[study.studyInstanceUID].lastError && (
+                          <div className="segmentation-study-detail-error">{segmentationStatuses[study.studyInstanceUID].lastError}</div>
+                        )}
+                      </div>
+                    )}
                   </td>
                   <td className="preload-cell">
                     <label
@@ -367,8 +583,16 @@ const StudyBrowser: React.FC<StudyBrowserProps> = ({
                     </span>
                   </td>
                   <td className="action-cell">
+                    <button
+                      className="segmentation-push-btn"
+                      disabled={!segmentationStatuses[study.studyInstanceUID]?.latestSegmentationObjectId || pushingSegmentationUIDs.has(study.studyInstanceUID)}
+                      onClick={event => { event.stopPropagation(); void pushSegmentation(study); }}
+                      title="Enviar el SEG vigente a S3, dentro de la carpeta de este estudio"
+                    >
+                      {pushingSegmentationUIDs.has(study.studyInstanceUID) ? '…' : 'PUSH SEG'}
+                    </button>
                     <button className="view-btn" title={t('studies.viewStudy')}>
-                      👁
+                      Open
                     </button>
                   </td>
                 </tr>
@@ -377,6 +601,64 @@ const StudyBrowser: React.FC<StudyBrowserProps> = ({
           </table>
         )}
       </div>
+      {filteredStudies.length > 0 && (
+        <div className="study-pagination" aria-label="Paginación de estudios">
+          <button type="button" disabled={page === 0} onClick={() => setPage(value => value - 1)}>← Anterior</button>
+          <span>Página {page + 1} de {pageCount} · {visibleStudies.length} visibles</span>
+          <button type="button" disabled={page + 1 >= pageCount} onClick={() => setPage(value => value + 1)}>Siguiente →</button>
+        </div>
+      )}
+      {segmentationDialogOpen && (
+        <div className="confirm-dialog-backdrop" role="presentation" onMouseDown={() => {
+          if (!segmentationDialogBusy) setSegmentationDialogOpen(false);
+        }}>
+          <section
+            className="segmentation-job-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="segmentation-job-dialog-title"
+            onMouseDown={event => event.stopPropagation()}
+          >
+            <h2 id="segmentation-job-dialog-title">{t('studies.segDialogTitle')}</h2>
+            <p>{t('studies.segDialogDescription')}</p>
+            {segmentationDialogBusy && Object.keys(eligibleSeries).length === 0 ? (
+              <div className="segmentation-job-dialog-loading">{t('common.loading')}</div>
+            ) : (
+              <div className="segmentation-job-series-list">
+                {studies.filter(study => selectedStudyUIDs.has(study.studyInstanceUID)).map(study => (
+                  <label key={study.studyInstanceUID} className="segmentation-job-series-row">
+                    <span>{study.patientName || study.patientID || study.studyInstanceUID}</span>
+                    <select
+                      value={selectedSeriesUIDs[study.studyInstanceUID] || ''}
+                      onChange={event => setSelectedSeriesUIDs(current => ({
+                        ...current, [study.studyInstanceUID]: event.target.value,
+                      }))}
+                      disabled={segmentationDialogBusy}
+                    >
+                      <option value="">{t('studies.segChooseSeries')}</option>
+                      {(eligibleSeries[study.studyInstanceUID] || []).map(series => (
+                        <option key={series.seriesInstanceUID} value={series.seriesInstanceUID}>
+                          {t('series.label', { number: series.seriesNumber })} · {series.seriesDescription || series.seriesInstanceUID}
+                        </option>
+                      ))}
+                    </select>
+                    {eligibleSeries[study.studyInstanceUID]?.length === 0 && (
+                      <small>{t('studies.segNoCtSeries')}</small>
+                    )}
+                  </label>
+                ))}
+              </div>
+            )}
+            {segmentationDialogError && <div className="segmentation-job-dialog-error">{segmentationDialogError}</div>}
+            <div className="confirm-dialog-actions">
+              <button className="confirm-dialog-btn secondary" disabled={segmentationDialogBusy}
+                onClick={() => setSegmentationDialogOpen(false)}>{t('common.cancel')}</button>
+              <button className="confirm-dialog-btn primary" disabled={segmentationDialogBusy}
+                onClick={() => void enqueueSegmentations()}>{t('studies.segEnqueue')}</button>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 };

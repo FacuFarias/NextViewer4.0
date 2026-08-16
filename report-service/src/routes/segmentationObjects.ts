@@ -6,11 +6,15 @@ import {
   listSegmentationObjects,
   SegmentationObjectRepositoryError,
   updateSegmentationObject,
+  markSegmentationObjectS3,
 } from '../repositories/segmentationObjectRepository';
 import {
   CreateSegmentationObjectInput,
   SegmentationObjectStatus,
 } from '../types/segmentationObjects';
+import { fetchDicomInstance } from '../services/pacs';
+import { putDicomSeg, segmentationBucket } from '../services/s3';
+import { getReferenceStudySourcePrefix } from '../repositories/referenceStorageRepository';
 
 const router = Router();
 router.use(authenticate);
@@ -100,6 +104,25 @@ router.post('/segmentation-objects', requirePermission('segmentation:write'), as
 router.get('/segmentation-objects/:id', requirePermission('segmentation:read'), async (request, response) => {
   try { response.json(await getSegmentationObject(request.params.id)); }
   catch (error) { sendError(response, error); }
+});
+
+router.post('/segmentation-objects/:id/push-s3', requirePermission('segmentation:write'), async (request, response) => {
+  try {
+    const object = await getSegmentationObject(request.params.id);
+    if (object.status === 'archived') throw new SegmentationObjectRepositoryError(409, 'Archived SEG objects cannot be pushed');
+    const studyPrefix = await getReferenceStudySourcePrefix(object.studyInstanceUID);
+    // The backend derives this prefix from the catalog; callers cannot choose
+    // an arbitrary S3 location. SEG files stay inside the study's OP-* folder.
+    const key = `${studyPrefix}/SEG/${object.id}.dcm`;
+    const bytes = await fetchDicomInstance(
+      object.studyInstanceUID, object.segmentationSeriesInstanceUID, object.segmentationSOPInstanceUID
+    );
+    const uploaded = await putDicomSeg(segmentationBucket, key, bytes);
+    response.json(await markSegmentationObjectS3(object.id, {
+      bucket: segmentationBucket, key, versionId: uploaded.versionId, etag: uploaded.etag,
+      checksumSha256: uploaded.checksumSha256, sizeBytes: uploaded.size,
+    }));
+  } catch (error) { sendError(response, error); }
 });
 
 router.patch('/segmentation-objects/:id', requirePermission('segmentation:write'), async (request, response) => {

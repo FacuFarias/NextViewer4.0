@@ -1,12 +1,14 @@
 import { Router, Request, Response } from 'express';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
 import pool from '../db';
 import { CreateReportRequest } from '../types';
+import { authenticate, requirePermission } from '../auth';
 
 const router = Router();
+router.use(authenticate);
 
 // Get report by study UID
-router.get('/reports/:studyUID', async (req: Request, res: Response) => {
+router.get('/reports/:studyUID', requirePermission('annotation:read'), async (req: Request, res: Response) => {
   const { studyUID } = req.params;
 
   try {
@@ -27,7 +29,7 @@ router.get('/reports/:studyUID', async (req: Request, res: Response) => {
 });
 
 // Get all reports for a study
-router.get('/reports/:studyUID/all', async (req: Request, res: Response) => {
+router.get('/reports/:studyUID/all', requirePermission('annotation:read'), async (req: Request, res: Response) => {
   const { studyUID } = req.params;
 
   try {
@@ -44,7 +46,7 @@ router.get('/reports/:studyUID/all', async (req: Request, res: Response) => {
 });
 
 // Create or update report
-router.post('/reports', async (req: Request, res: Response) => {
+router.post('/reports', requirePermission('annotation:write'), async (req: Request, res: Response) => {
   const { study_uid, patient_id, accession_number, report }: CreateReportRequest = req.body;
 
   if (!study_uid) {
@@ -71,7 +73,7 @@ router.post('/reports', async (req: Request, res: Response) => {
       );
     } else {
       // Create new report
-      const id = uuidv4();
+      const id = randomUUID();
       result = await pool.query(
         `INSERT INTO measurements.reports (id, study_uid, patient_id, accession_number, report)
          VALUES ($1, $2, $3, $4, $5)
@@ -88,7 +90,7 @@ router.post('/reports', async (req: Request, res: Response) => {
 });
 
 // Delete report
-router.delete('/reports/:reportId', async (req: Request, res: Response) => {
+router.delete('/reports/:reportId', requirePermission('annotation:delete'), async (req: Request, res: Response) => {
   const { reportId } = req.params;
 
   try {
@@ -105,7 +107,7 @@ router.delete('/reports/:reportId', async (req: Request, res: Response) => {
 });
 
 // Delete all reports for a study
-router.delete('/reports/study/:studyUID', async (req: Request, res: Response) => {
+router.delete('/reports/study/:studyUID', requirePermission('annotation:delete'), async (req: Request, res: Response) => {
   const { studyUID } = req.params;
 
   try {

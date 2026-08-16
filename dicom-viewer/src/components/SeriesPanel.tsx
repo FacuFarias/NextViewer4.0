@@ -8,7 +8,6 @@ interface SeriesPanelProps {
   study: DicomStudy;
   currentSeries: DicomSeries | null;
   onSeriesSelect: (series: DicomSeries) => void;
-  onBackToStudies: () => void;
   thumbnails: Record<string, string>;
   preloadProgress: Record<string, SeriesPreloadProgress>;
   preloadQueue: PreloadQueueState;
@@ -18,36 +17,22 @@ const SeriesPanel: React.FC<SeriesPanelProps> = ({
   study,
   currentSeries,
   onSeriesSelect,
-  onBackToStudies,
   thumbnails,
   preloadProgress,
   preloadQueue,
 }) => {
   const { t } = useTranslation();
+  const visibleSeries = study.series.filter(series => {
+    const seriesModality = series.modality?.trim().toUpperCase();
+    const instanceModality = series.instances?.[0]?.modality?.trim().toUpperCase();
+    return seriesModality !== 'SEG' && instanceModality !== 'SEG';
+  });
   const getModalityIcon = (modality: string): string => {
-    const icons: Record<string, string> = {
-      CT: '🖥',
-      MR: '🧲',
-      DX: '📸',
-      US: '📡',
-      MG: '🔬',
-      CR: '📷',
-      NM: '☢',
-      PT: '⚛',
-      XA: '🩻',
-      RF: '📺',
-    };
-    return icons[modality] || '📋';
+    return modality || 'DICOM';
   };
 
   return (
     <div className="series-panel">
-      <div className="series-panel-header">
-        <button className="back-btn" onClick={onBackToStudies}>
-          {t('series.back')}
-        </button>
-      </div>
-
       <div className="patient-info-section">
         <div className="patient-info-row">
           <span className="info-label">{t('series.patient')}</span>
@@ -56,6 +41,10 @@ const SeriesPanel: React.FC<SeriesPanelProps> = ({
         <div className="patient-info-row">
           <span className="info-label">{t('series.id')}</span>
           <span className="info-value">{study.patientID}</span>
+        </div>
+        <div className="patient-info-row">
+          <span className="info-label">{t('series.accession')}</span>
+          <span className="info-value">{study.accessionNumber || '—'}</span>
         </div>
         <div className="patient-info-row">
           <span className="info-label">{t('series.date')}</span>
@@ -74,9 +63,9 @@ const SeriesPanel: React.FC<SeriesPanelProps> = ({
       </div>
 
       <div className="series-selector-section">
-        <h4>{t('series.title', { count: study.series.length })}</h4>
+        <h4>{t('series.title', { count: visibleSeries.length })}</h4>
         <div className="series-list">
-          {study.series.map((series, index) => (
+          {visibleSeries.map((series, index) => (
             <div
               key={series.seriesInstanceUID}
               className={`series-item ${currentSeries?.seriesInstanceUID === series.seriesInstanceUID ? 'active' : ''}`}

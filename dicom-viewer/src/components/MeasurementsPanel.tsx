@@ -106,7 +106,7 @@ const MeasurementsPanelContent: React.FC<MeasurementsPanelProps> = ({
               title={measurement.saveStatus === 'saved' ? t('measurements.saved') : t('measurements.save')}
               aria-label={measurement.saveStatus === 'saved' ? t('measurements.saved') : t('measurements.save')}
             >
-              {measurement.saveStatus === 'saving' ? '…' : measurement.saveStatus === 'saved' ? '✓' : '💾'}
+              {measurement.saveStatus === 'saving' ? '…' : measurement.saveStatus === 'saved' ? 'Saved' : 'Save'}
             </button>
             {measurement.saveStatus === 'error' && (
               <button
@@ -116,7 +116,7 @@ const MeasurementsPanelContent: React.FC<MeasurementsPanelProps> = ({
                 title={t('measurements.retry')}
                 aria-label={t('measurements.retry')}
               >
-                ↻
+                Retry
               </button>
             )}
             <button

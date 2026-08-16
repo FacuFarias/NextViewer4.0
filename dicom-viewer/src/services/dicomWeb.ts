@@ -1,11 +1,9 @@
 import { DicomStudy, DicomSeries, DicomInstance, DicomWebConfig } from '../types/dicom';
-import { DICOM_PASSWORD, DICOM_USERNAME, getAccessToken, getCacheUserKey } from './auth';
+import { getAccessToken, getCacheUserKey } from './auth';
 
 const DEFAULT_CONFIG: DicomWebConfig = {
   baseUrl: '/dcm4chee-arc/aets/DCM4CHEE/rs',
   wadoUrl: '/dcm4chee-arc/aets/DCM4CHEE/wado',
-  username: DICOM_USERNAME,
-  password: DICOM_PASSWORD,
 };
 
 function parseDicomInstanceMetadata(item: any): Partial<DicomInstance> {
@@ -80,18 +78,9 @@ class DicomWebService {
       'Accept': 'application/dicom+json',
     };
 
-    if (this.config.username && this.config.password) {
-      try {
-        const token = await getAccessToken(this.config.username, this.config.password);
-        headers['Authorization'] = `Bearer ${token}`;
-        headers['X-Dicom-Cache-User'] = getCacheUserKey();
-      } catch (error) {
-        console.error('Failed to get access token:', error);
-        // Fallback to basic auth if keycloak fails
-        const auth = btoa(`${this.config.username}:${this.config.password}`);
-        headers['Authorization'] = `Basic ${auth}`;
-      }
-    }
+    const token = await getAccessToken();
+    headers['Authorization'] = `Bearer ${token}`;
+    headers['X-Dicom-Cache-User'] = getCacheUserKey();
 
     return headers;
   }
@@ -117,16 +106,9 @@ class DicomWebService {
       'Accept': 'application/dicom',
     };
 
-    if (this.config.username && this.config.password) {
-      try {
-        const token = await getAccessToken(this.config.username, this.config.password);
-        headers['Authorization'] = `Bearer ${token}`;
-        headers['X-Dicom-Cache-User'] = getCacheUserKey();
-      } catch (error) {
-        const auth = btoa(`${this.config.username}:${this.config.password}`);
-        headers['Authorization'] = `Basic ${auth}`;
-      }
-    }
+    const token = await getAccessToken();
+    headers['Authorization'] = `Bearer ${token}`;
+    headers['X-Dicom-Cache-User'] = getCacheUserKey();
 
     return headers;
   }
@@ -313,16 +295,9 @@ class DicomWebService {
         middleInstance.sopInstanceUID
       );
 
-      const headers: Record<string, string> = {};
-      if (this.config.username && this.config.password) {
-        try {
-          const token = await getAccessToken(this.config.username, this.config.password);
-          headers['Authorization'] = `Bearer ${token}`;
-        } catch (error) {
-          console.error('Failed to get token for thumbnail:', error);
-          return null;
-        }
-      }
+      const headers: Record<string, string> = {
+        Authorization: `Bearer ${await getAccessToken()}`,
+      };
 
       const response = await fetch(thumbnailUrl, { headers });
       

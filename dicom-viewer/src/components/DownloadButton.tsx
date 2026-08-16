@@ -42,7 +42,7 @@ const DownloadButton: React.FC<DownloadButtonProps> = ({ study, currentSeries })
     try {
       const JSZip = (await import('jszip')).default;
       const { saveAs } = await import('file-saver');
-      const { DICOM_PASSWORD, DICOM_USERNAME, getAccessToken } = await import('../services/auth');
+      const { getAccessToken } = await import('../services/auth');
       const { dicomWebService } = await import('../services/dicomWeb');
 
       const seriesWithInstances: Array<{ series: DicomSeries; instances: any[] }> = [];
@@ -72,7 +72,7 @@ const DownloadButton: React.FC<DownloadButtonProps> = ({ study, currentSeries })
 
         for (const instance of instances) {
           try {
-            const token = await getAccessToken(DICOM_USERNAME, DICOM_PASSWORD);
+            const token = await getAccessToken();
             const wadoUrl = dicomWebService.getInstanceWadoUriUrl(
               study.studyInstanceUID,
               series.seriesInstanceUID,

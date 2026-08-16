@@ -6,21 +6,25 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "reconcile:segmentations": "node dist/reconcileSegmentations.js",
+    "sync:reference-storage": "node dist/syncReferenceStorage.js",
+    "test": "npm run build && node --test dist/tests/*.test.js"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1105.0",
+    "@aws-sdk/s3-request-presigner": "^3.1105.0",
     "cors": "^2.8.5",
-    "jose": "^5.10.0",
+    "dicom-parser": "^1.8.21",
     "express": "^4.18.2",
-    "pg": "^8.11.3",
-    "uuid": "^9.0.0"
+    "jose": "^5.10.0",
+    "pg": "^8.11.3"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
-    "@types/node": "^20.10.0",
+    "@types/node": "^22.0.0",
     "@types/pg": "^8.10.9",
-    "@types/uuid": "^9.0.7",
     "tsx": "^4.6.0",
     "typescript": "^5.3.2"
   }

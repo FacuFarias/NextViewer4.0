@@ -1,4 +1,4 @@
-import { DICOM_PASSWORD, DICOM_USERNAME, getAccessToken, getCurrentToken } from './auth';
+import { getAccessToken, getCurrentToken } from './auth';
 import {
   CreateSegmentationObjectPayload,
   SegmentationObject,
@@ -14,7 +14,7 @@ export class SegmentationObjectApiError extends Error {
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const token = getCurrentToken() || await getAccessToken(DICOM_USERNAME, DICOM_PASSWORD).catch(() => null);
+  const token = getCurrentToken() || await getAccessToken();
   const headers = new Headers(options.headers);
   headers.set('Content-Type', 'application/json');
   if (token) headers.set('Authorization', `Bearer ${token}`);
@@ -52,6 +52,12 @@ export const segmentationObjectService = {
     return request<SegmentationObject>(`/segmentation-objects/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       body: JSON.stringify(input),
+    });
+  },
+
+  pushToS3(id: string): Promise<SegmentationObject> {
+    return request<SegmentationObject>(`/segmentation-objects/${encodeURIComponent(id)}/push-s3`, {
+      method: 'POST',
     });
   },
 };

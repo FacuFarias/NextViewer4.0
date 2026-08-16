@@ -8,8 +8,6 @@ import {
 import * as dicomParser from 'dicom-parser';
 import { Decoder } from 'jpeg-lossless-decoder-js';
 import {
-  DICOM_PASSWORD,
-  DICOM_USERNAME,
   getAccessToken,
   getCacheUserKey,
 } from './auth';
@@ -182,7 +180,7 @@ function createColorImage(
 
 async function loadUsLosslessImage(imageId: string, signal: AbortSignal): Promise<Record<string, unknown>> {
   const url = imageId.slice(`${IMAGE_SCHEME}:`.length);
-  const token = await getAccessToken(DICOM_USERNAME, DICOM_PASSWORD);
+  const token = await getAccessToken();
   const response = await fetch(url, {
     signal,
     headers: {

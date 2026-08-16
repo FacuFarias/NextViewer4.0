@@ -68,6 +68,7 @@ export function hasPermission(user: AuthenticatedUser | undefined, permission: s
     'annotation:review': ['reviewer'],
     'segmentation:read': ['annotator', 'reviewer', 'segmentation-reader'],
     'segmentation:write': ['annotator', 'segmentation-writer'],
+    'segmentation:worker': ['segmentation-worker'],
   };
 
   return user.roles.some(role => role === permission || roleAliases[permission]?.includes(role));

@@ -4,6 +4,14 @@ import {
   SEGMENTATION_OBJECT_MIGRATION_SQL,
   SEGMENTATION_OBJECT_MIGRATION_VERSION,
 } from './migrations/segmentationObjects';
+import {
+  SEGMENTATION_JOB_MIGRATION_SQL,
+  SEGMENTATION_JOB_MIGRATION_VERSION,
+} from './migrations/segmentationJobs';
+import {
+  REFERENCE_STORAGE_MIGRATION_SQL,
+  REFERENCE_STORAGE_MIGRATION_VERSION,
+} from './migrations/referenceStorage';
 
 const pool = new Pool({
   host: process.env.DB_HOST || 'localhost',
@@ -56,6 +64,20 @@ export async function initDatabase(): Promise<void> {
          VALUES ($1)
          ON CONFLICT (version) DO NOTHING`,
         [SEGMENTATION_OBJECT_MIGRATION_VERSION]
+      );
+      await client.query(SEGMENTATION_JOB_MIGRATION_SQL);
+      await client.query(
+        `INSERT INTO ia.schema_migrations (version)
+         VALUES ($1)
+         ON CONFLICT (version) DO NOTHING`,
+        [SEGMENTATION_JOB_MIGRATION_VERSION]
+      );
+      await client.query(REFERENCE_STORAGE_MIGRATION_SQL);
+      await client.query(
+        `INSERT INTO ia.schema_migrations (version)
+         VALUES ($1)
+         ON CONFLICT (version) DO NOTHING`,
+        [REFERENCE_STORAGE_MIGRATION_VERSION]
       );
       await client.query('COMMIT');
     } catch (migrationError) {

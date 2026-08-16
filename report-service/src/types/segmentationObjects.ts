@@ -16,6 +16,12 @@ export interface SegmentationObjectRecord {
   supersedesObjectId: string | null;
   createdBy: string | null;
   status: SegmentationObjectStatus;
+  s3Bucket: string | null;
+  s3Key: string | null;
+  s3VersionId: string | null;
+  s3ETag: string | null;
+  checksumSha256: string | null;
+  sizeBytes: number | null;
   createdAt: string;
   updatedAt: string;
 }

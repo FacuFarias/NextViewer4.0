@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { ViewerState, DicomStudy, DicomSeries } from '../types/dicom';
 import type { AnnotationImageMetadata, AnnotationSet, CreateAnnotationPayload, PersistedAnnotation } from '../types/annotations';
 import { dicomWebService } from '../services/dicomWeb';
-import { DICOM_PASSWORD, DICOM_USERNAME, getAccessToken } from '../services/auth';
+import { getAccessToken } from '../services/auth';
 import { annotationService } from '../services/annotations';
 import { getViewerImageId, resolveViewerModality } from '../services/viewerModality';
 import {
@@ -271,7 +271,7 @@ export function useDicomViewer() {
         await initializeCornerstone();
         registerTools();
 
-        const token = await getAccessToken(DICOM_USERNAME, DICOM_PASSWORD);
+        const token = await getAccessToken();
         configureDicomLoader({
           'Authorization': `Bearer ${token}`,
         });

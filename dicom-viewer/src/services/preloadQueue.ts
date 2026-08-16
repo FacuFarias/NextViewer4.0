@@ -1,5 +1,5 @@
 import { dicomWebService } from './dicomWeb';
-import { DICOM_PASSWORD, DICOM_USERNAME, getAccessToken, getCacheUserKey } from './auth';
+import { getAccessToken, getCacheUserKey } from './auth';
 import { hasCachedDicom, putCachedDicom } from './dicomCache';
 
 export type StudyPreloadStatus = 'queued' | 'downloading' | 'complete' | 'error';
@@ -123,7 +123,7 @@ async function ensureInitialized(): Promise<void> {
     // Resolve the user before selecting the IndexedDB database. This keeps
     // queue metadata isolated even when the application is opened by another
     // authenticated user on the same browser profile.
-    await getAccessToken(DICOM_USERNAME, DICOM_PASSWORD).catch(() => null);
+    await getAccessToken();
     const databaseUserKey = getCacheUserKey();
     memoryStore = new Map<string, PreloadQueueItem>();
 

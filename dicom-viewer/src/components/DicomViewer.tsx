@@ -7,7 +7,7 @@ import type { ViewerMeasurement } from '../hooks/useDicomViewer';
 import { DicomStudy, DicomSeries } from '../types/dicom';
 import { dicomWebService } from '../services/dicomWeb';
 import { getConfig } from '../services/config';
-import { isAdmin } from '../services/auth';
+import { getCurrentUser, isAdmin, logout } from '../services/auth';
 import StudyBrowser from './StudyBrowser';
 import SeriesPanel from './SeriesPanel';
 import Toolbar, { AnnotationToolbar } from './Toolbar';
@@ -213,7 +213,8 @@ const DicomViewer: React.FC = () => {
 
   const [thumbnails, setThumbnails] = useState<Record<string, string>>({});
   const [leftSidebarWidth, setLeftSidebarWidth] = useState(280);
-  const [rightSidebarWidth, setRightSidebarWidth] = useState(240);
+  const [isSeriesSidebarOpen, setIsSeriesSidebarOpen] = useState(false);
+  const [rightSidebarWidth, setRightSidebarWidth] = useState(340);
   const [activeTool, setActiveTool] = useState('WindowLevel');
   const [selectedCtSinusesFeatureKey, setSelectedCtSinusesFeatureKey] = useState<string | null>(null);
   const [voxelSegmentationDirty, setVoxelSegmentationDirty] = useState(false);
@@ -231,6 +232,7 @@ const DicomViewer: React.FC = () => {
   } | null>(null);
   const config = getConfig();
   const [showConfigLink, setShowConfigLink] = useState(false);
+  const username = getCurrentUser();
 
   useEffect(() => {
     const checkAdmin = async () => {
@@ -432,11 +434,20 @@ const DicomViewer: React.FC = () => {
             <span className="server-badge">dcm4chee</span>
           </div>
           <div className="header-right">
+            {username && <span className="session-user-badge">{username}</span>}
+            {showConfigLink && (
+              <button className="config-link-btn" onClick={() => navigate('/reference-storage')}>
+                {t('viewer.referenceStorage')}
+              </button>
+            )}
             {showConfigLink && (
               <button className="config-link-btn" onClick={() => navigate('/config')}>
                 {t('viewer.config')}
               </button>
             )}
+            <button className="logout-btn" onClick={() => void logout()}>
+              {t('viewer.logout')}
+            </button>
           </div>
         </header>
         <main className="study-browser-container">
@@ -461,7 +472,15 @@ const DicomViewer: React.FC = () => {
         <div className="header-left">
           <button className="back-to-studies" onClick={handleBackToStudies} title={t('viewer.backToStudies')}>
             <IconBack className="header-icon" />
-            <span>{t('common.studies')}</span>
+            <span>{t('viewer.title')}</span>
+          </button>
+          <button
+            className={`series-sidebar-toggle ${isSeriesSidebarOpen ? 'active' : ''}`}
+            onClick={() => setIsSeriesSidebarOpen(previous => !previous)}
+            title={isSeriesSidebarOpen ? 'Ocultar series' : 'Mostrar series'}
+            aria-expanded={isSeriesSidebarOpen}
+          >
+            <span>Series</span>
           </button>
         </div>
         
@@ -483,24 +502,32 @@ const DicomViewer: React.FC = () => {
             </span>
           )}
           {showConfigLink && (
+            <button className="config-link-btn" onClick={() => navigate('/reference-storage')} title={t('viewer.referenceStorage')}>
+              S3
+            </button>
+          )}
+          {showConfigLink && (
             <button className="config-link-btn" onClick={() => navigate('/config')} title={t('config.title')}>
               <IconSettings className="header-icon" />
             </button>
           )}
+          <button className="logout-btn compact" onClick={() => void logout()} title={t('viewer.logout')}>
+            {t('viewer.logout')}
+          </button>
         </div>
       </header>
 
       <div className="viewer-content">
         <aside 
-          className="series-sidebar"
-          style={{ width: `${leftSidebarWidth}px` }}
+          className={`series-sidebar ${isSeriesSidebarOpen ? 'is-open' : 'is-collapsed'}`}
+          style={{ width: isSeriesSidebarOpen ? `${leftSidebarWidth}px` : '0px' }}
+          aria-hidden={!isSeriesSidebarOpen}
         >
           {state.currentStudy && (
             <SeriesPanel
               study={state.currentStudy}
               currentSeries={state.currentSeries}
               onSeriesSelect={handleSeriesSelect}
-              onBackToStudies={handleBackToStudies}
               thumbnails={thumbnails}
               preloadProgress={preloadProgress}
               preloadQueue={preloadQueue}
@@ -508,11 +535,13 @@ const DicomViewer: React.FC = () => {
           )}
         </aside>
 
-        <ResizeHandle
-          direction="right"
-          onResize={handleLeftSidebarResize}
-          onResizeEnd={handleResizeEnd}
-        />
+        {isSeriesSidebarOpen && (
+          <ResizeHandle
+            direction="right"
+            onResize={handleLeftSidebarResize}
+            onResizeEnd={handleResizeEnd}
+          />
+        )}
 
         <main className="main-viewport">
           {state.error && (
@@ -531,7 +560,7 @@ const DicomViewer: React.FC = () => {
           )}
 
           <div
-            className={`${isCT ? 'mpr-composite-layout' : 'stack-viewer-layout'} viewer-modality-${viewerModality}`}
+            className={`${isCT ? 'mpr-composite-layout recon-only' : 'stack-viewer-layout'} viewer-modality-${viewerModality}`}
           >
             <section className="mpr-native-panel">
               <div className={`mpr-native-header${isCT ? '' : ' mpr-native-header-hidden'}`}>
@@ -547,7 +576,7 @@ const DicomViewer: React.FC = () => {
                   >
                     {!state.isLoaded && !state.isLoading && (
                       <div className="placeholder">
-                        <div className="placeholder-icon">📋</div>
+                        <div className="placeholder-icon" aria-hidden="true"></div>
                         <p>{t('viewer.selectSeries')}</p>
                       </div>
                     )}
@@ -593,6 +622,8 @@ const DicomViewer: React.FC = () => {
                   <MPRView
                     studyInstanceUID={state.currentStudy.studyInstanceUID}
                     series={state.currentSeries}
+                    patientName={state.currentStudy.patientName}
+                    patientID={state.currentStudy.patientID}
                     nativeImageIndex={state.imageIndex}
                     onNativeSliceChange={handleNativeSliceChange}
                     onBack={() => {}}

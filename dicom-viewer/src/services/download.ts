@@ -2,7 +2,7 @@ import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import { DicomSeries, DicomInstance } from '../types/dicom';
 import { dicomWebService } from './dicomWeb';
-import { DICOM_PASSWORD, DICOM_USERNAME, getAccessToken } from './auth';
+import { getAccessToken } from './auth';
 
 export async function downloadSeriesAsZip(
   studyInstanceUID: string,
@@ -23,7 +23,7 @@ export async function downloadSeriesAsZip(
     const instance = instances[i];
     
     try {
-      const token = await getAccessToken(DICOM_USERNAME, DICOM_PASSWORD);
+      const token = await getAccessToken();
       const wadoUrl = dicomWebService.getInstanceWadoUriUrl(
         studyInstanceUID,
         series.seriesInstanceUID,
@@ -71,7 +71,7 @@ export async function downloadInstance(
   seriesInstanceUID: string,
   instance: DicomInstance
 ): Promise<void> {
-  const token = await getAccessToken(DICOM_USERNAME, DICOM_PASSWORD);
+  const token = await getAccessToken();
   const wadoUrl = dicomWebService.getInstanceWadoUriUrl(
     studyInstanceUID,
     seriesInstanceUID,

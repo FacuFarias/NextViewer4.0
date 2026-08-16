@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ViewerConfig, FeatureKey, Language } from '../types/config';
 import { getConfig, updateConfig, resetConfig } from '../services/config';
-import { getCurrentUser } from '../services/auth';
+import { getCurrentUser, logout } from '../services/auth';
 import { useTranslation } from '../i18n';
 
 const ConfigPage: React.FC = () => {
@@ -104,6 +104,9 @@ const ConfigPage: React.FC = () => {
           <span className="config-user-badge">
             👤 {username || t('config.administrator')}
           </span>
+          <button className="logout-btn" onClick={() => void logout()}>
+            {t('viewer.logout')}
+          </button>
         </div>
       </header>
 

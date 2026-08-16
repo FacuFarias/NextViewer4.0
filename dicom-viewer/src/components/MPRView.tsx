@@ -47,6 +47,8 @@ import {
 interface MPRViewProps {
   studyInstanceUID: string;
   series: DicomSeries;
+  patientName?: string;
+  patientID?: string;
   onBack: () => void;
   embedded?: boolean;
   nativeImageIndex?: number;
@@ -64,6 +66,7 @@ const TOOL_GROUP_ID = 'mpr-tool-group';
 const VOLUME_3D_TOOL_GROUP_ID = 'mpr-volume-3d-tool-group';
 const VOLUME_3D_ORIENTATION_WIDGET_ID = 'mpr-volume-3d-orientation-cube';
 const REGION_GROW_CLICK_DELAY_MS = 250;
+const MPR_CROSSHAIR_COLOR = 'rgb(103, 232, 249)';
 
 type ViewportId = 'axial' | 'sagittal' | 'coronal';
 type Volume3DOrientation = 'front' | 'back' | 'left' | 'right' | 'superior' | 'inferior';
@@ -517,6 +520,8 @@ function getMprVolumeId(studyInstanceUID: string, seriesInstanceUID: string): st
 const MPRView: React.FC<MPRViewProps> = ({
   studyInstanceUID,
   series,
+  patientName,
+  patientID,
   onBack,
   embedded = false,
   nativeImageIndex = 0,
@@ -1585,7 +1590,9 @@ const MPRView: React.FC<MPRViewProps> = ({
         toolGroup.addTool(ZoomTool.toolName);
         toolGroup.addTool(WindowLevelTool.toolName);
         toolGroup.addTool(StackScrollTool.toolName);
-        toolGroup.addTool(CrosshairsTool.toolName);
+        toolGroup.addTool(CrosshairsTool.toolName, {
+          getReferenceLineColor: () => MPR_CROSSHAIR_COLOR,
+        });
         if (voxelSegmentationEnabled) {
           toolGroup.addTool(BrushTool.toolName);
         }
@@ -2559,7 +2566,14 @@ const MPRView: React.FC<MPRViewProps> = ({
       {VIEWPORT_ORDER.map(plane => {
         return (
           <div key={plane} className={getViewportClass(plane)}>
-            <div className="mpr-viewport-label">{t(`mpr.${plane}`)} · {t('mpr.reconstruction')}</div>
+            <div className="mpr-viewport-label">
+              <span>{t(`mpr.${plane}`)} · {t('mpr.reconstruction')}</span>
+              {(patientName || patientID) && (
+                <span className="mpr-viewport-patient">
+                  {patientName || '—'} · ID: {patientID || '—'}
+                </span>
+              )}
+            </div>
             <div
               ref={element => { viewportRefs.current[plane] = element; }}
               className={`mpr-viewport ${showMprCrosshairs ? '' : 'mpr-viewport-crosshairs-hidden'}`}
@@ -2597,22 +2611,14 @@ const MPRView: React.FC<MPRViewProps> = ({
   const renderSegmentationControls = () => (
     <div className="mpr-segmentation-controls">
       <div className="mpr-segmentation-controls-header">Segmentación voxel</div>
-      <label className="mpr-axes-toggle">
-        <input
-          type="checkbox"
-          checked={showMprCrosshairs}
-          onChange={event => setShowMprCrosshairs(event.target.checked)}
-        />
-        <span>Ver ejes de corte</span>
-      </label>
-      <div className="mpr-segmentation-controls-tools">
+      <div className="mpr-segmentation-controls-tools mpr-segmentation-tool-tabs" role="tablist" aria-label="Herramientas de segmentación">
         <button
           className={`annotation-tool-btn ${activeTool === 'Brush' ? 'active' : ''}`}
           disabled={!segmentationReady}
           onClick={() => setVoxelSegmentationTool('Brush')}
           title="Pincel voxel"
         >
-          🖌 Brush
+          Brush
         </button>
         <button
           className={`annotation-tool-btn ${activeTool === 'Eraser' ? 'active' : ''}`}
@@ -2620,7 +2626,7 @@ const MPRView: React.FC<MPRViewProps> = ({
           onClick={() => setVoxelSegmentationTool('Eraser')}
           title="Borrar la región segmentada conectada al voxel seleccionado"
         >
-          ◌ Eraser
+          Eraser
         </button>
         <button
           className={`annotation-tool-btn ${activeTool === 'BrushEraser' ? 'active' : ''}`}
@@ -2628,7 +2634,7 @@ const MPRView: React.FC<MPRViewProps> = ({
           onClick={() => setVoxelSegmentationTool('BrushEraser')}
           title="Borrador circular voxel a voxel"
         >
-          ◌ Circle
+          Circle
         </button>
         <button
           className={`annotation-tool-btn ${activeTool === 'RegionGrow' ? 'active' : ''}`}
@@ -2636,7 +2642,7 @@ const MPRView: React.FC<MPRViewProps> = ({
           onClick={() => setVoxelSegmentationTool('RegionGrow')}
           title="Crecimiento de región desde MPR por valores HU"
         >
-          {regionGrowBusy ? '… Grow' : '◉ Grow'}
+          {regionGrowBusy ? '… Grow' : 'Grow'}
         </button>
       </div>
 
@@ -2673,18 +2679,18 @@ const MPRView: React.FC<MPRViewProps> = ({
           <label className="mpr-region-grow-control">
             <span>Dist. máx.</span>
             <input
-              type="number"
-              min="1"
-              max="200"
+              type="range"
+              min="5"
+              max="50"
               step="1"
               value={regionGrowMaxDistanceMm}
               onChange={event => setRegionGrowMaxDistanceMm(
-                Math.max(1, Math.min(200, Number(event.target.value) || 1))
+                Math.max(5, Math.min(50, Number(event.target.value) || 5))
               )}
               disabled={regionGrowBusy}
               title="Distancia máxima de crecimiento desde la semilla, en milímetros"
             />
-            <span>mm</span>
+            <span>{regionGrowMaxDistanceMm} mm</span>
           </label>
         </div>
       )}
@@ -2711,7 +2717,7 @@ const MPRView: React.FC<MPRViewProps> = ({
           }}
           title="Interpolar automáticamente entre cortes pintados en la vista activa"
         >
-          {interpolationBusy ? '… Interp.' : '↕ Auto'}
+          {interpolationBusy ? '… Interp.' : 'Auto'}
         </button>
         <button
           className="annotation-tool-btn"
@@ -2725,7 +2731,7 @@ const MPRView: React.FC<MPRViewProps> = ({
                 : 'Deshacer edición voxel'
           }
         >
-          ↶
+          Undo
         </button>
         <button
           className="annotation-tool-btn"
@@ -2739,7 +2745,7 @@ const MPRView: React.FC<MPRViewProps> = ({
                 : 'Rehacer edición voxel'
           }
         >
-          ↷
+          Redo
         </button>
       </div>
 
@@ -2773,7 +2779,7 @@ const MPRView: React.FC<MPRViewProps> = ({
           onClick={toggleActiveSegmentLock}
           title={activeSegmentLocked ? 'Desbloquear segmento' : 'Bloquear segmento'}
         >
-          {activeSegmentLocked ? '🔒' : '🔓'}
+          {activeSegmentLocked ? 'Locked' : 'Unlocked'}
         </button>
         <button
           className={`annotation-tool-btn ${activeSegmentVisible ? 'active' : ''}`}
@@ -2781,7 +2787,7 @@ const MPRView: React.FC<MPRViewProps> = ({
           onClick={toggleActiveSegmentVisibility}
           title={activeSegmentVisible ? 'Ocultar segmento' : 'Mostrar segmento'}
         >
-          {activeSegmentVisible ? '◉' : '○'}
+          {activeSegmentVisible ? 'Visible' : 'Hidden'}
         </button>
       </div>
 
@@ -2792,7 +2798,7 @@ const MPRView: React.FC<MPRViewProps> = ({
           onClick={() => void saveVoxelSegmentation()}
           title="Guardar como nuevo DICOM SEG"
         >
-          {segmentationBusy ? '…' : '💾 Nueva versión'}
+          {segmentationBusy ? '…' : 'Nueva versión'}
         </button>
         <button
           className="annotation-tool-btn"
@@ -2832,8 +2838,16 @@ const MPRView: React.FC<MPRViewProps> = ({
         onClick={() => setActiveAnnotationTool('WindowLevel')}
         title={t('toolbar.windowLevel')}
       >
-        🖱️ W/L
+        W/L
       </button>
+      <label className="mpr-axes-toggle mpr-toolbar-axes-toggle">
+        <input
+          type="checkbox"
+          checked={showMprCrosshairs}
+          onChange={event => setShowMprCrosshairs(event.target.checked)}
+        />
+        <span>Ver ejes</span>
+      </label>
       <div className="mpr-standard-zoom" title="Zoom estándar">
         <button
           className="annotation-tool-btn"
@@ -2870,7 +2884,7 @@ const MPRView: React.FC<MPRViewProps> = ({
           {showVolume3D ? '▣ MPR' : '▣ 3D'}
         </button>
       )}
-      {!voxelSegmentationEnabled && <span className="mpr-readonly-indicator">🔒 {t('viewer.spatialOnly')}</span>}
+      {!voxelSegmentationEnabled && <span className="mpr-readonly-indicator">{t('viewer.spatialOnly')}</span>}
       {segmentationError && <span className="mpr-segmentation-error">⚠ {segmentationError}</span>}
       {segmentationOperationError && <span className="mpr-segmentation-error">⚠ {segmentationOperationError}</span>}
     </div>
