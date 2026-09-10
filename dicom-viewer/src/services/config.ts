@@ -1,12 +1,9 @@
-import { ViewerConfig, DEFAULT_CONFIG, FeatureKey, Language } from '../types/config';
+import { ViewerConfig, DEFAULT_CONFIG } from '../types/config';
 
 const CONFIG_KEY = 'dicom-viewer-config';
 
-function isLanguage(value: unknown): value is Language {
-  return value === 'en' || value === 'es';
-}
-
 export function getConfig(): ViewerConfig {
+  const runtimeDownloadEnabled = window.__NEXTVIEWER_CONFIG__?.downloadEnabled;
   try {
     const stored = localStorage.getItem(CONFIG_KEY);
     if (stored) {
@@ -14,13 +11,20 @@ export function getConfig(): ViewerConfig {
       return {
         ...DEFAULT_CONFIG,
         ...parsed,
-        language: isLanguage(parsed?.language) ? parsed.language : DEFAULT_CONFIG.language,
+        downloadEnabled: typeof runtimeDownloadEnabled === 'boolean'
+          ? runtimeDownloadEnabled
+          : DEFAULT_CONFIG.downloadEnabled,
       };
     }
   } catch (error) {
     console.error('Failed to load config:', error);
   }
-  return { ...DEFAULT_CONFIG };
+  return {
+    ...DEFAULT_CONFIG,
+    downloadEnabled: typeof runtimeDownloadEnabled === 'boolean'
+      ? runtimeDownloadEnabled
+      : DEFAULT_CONFIG.downloadEnabled,
+  };
 }
 
 export function updateConfig(config: Partial<ViewerConfig>): ViewerConfig {
@@ -45,7 +49,7 @@ export function resetConfig(): ViewerConfig {
   return { ...DEFAULT_CONFIG };
 }
 
-export function isFeatureEnabled(feature: FeatureKey): boolean {
+export function isFeatureEnabled(feature: keyof ViewerConfig): boolean {
   const config = getConfig();
   return config[feature];
 }

@@ -1,6 +1,5 @@
 import React, { useRef, useEffect } from 'react';
 import { DicomInstance } from '../types/dicom';
-import { useTranslation } from '../i18n';
 
 interface FilmstripProps {
   instances: DicomInstance[];
@@ -11,7 +10,6 @@ const Filmstrip: React.FC<FilmstripProps> = ({
   instances,
   currentIndex,
 }) => {
-  const { t } = useTranslation();
   const listRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef<HTMLDivElement>(null);
 
@@ -40,13 +38,15 @@ const Filmstrip: React.FC<FilmstripProps> = ({
       <div className="filmstrip-list" ref={listRef}>
         {instances.map((instance, index) => (
           <div
-            key={instance.sopInstanceUID}
+            key={`${instance.sopInstanceUID}-${instance.frameNumber || 1}`}
             ref={index === currentIndex ? activeRef : null}
             className={`filmstrip-item ${index === currentIndex ? 'active' : ''}`}
-            title={`${t('common.instance')} ${instance.instanceNumber || index + 1}`}
+            title={`Instancia ${instance.instanceNumber || index + 1}, frame ${instance.frameNumber || 1}`}
           >
             <div className="filmstrip-item-number">
-              {instance.instanceNumber || index + 1}
+              {instance.frameNumber && (instance.numberOfFrames || 1) > 1
+                ? `${instance.instanceNumber || 1}.${instance.frameNumber}`
+                : instance.instanceNumber || index + 1}
             </div>
             <div className="filmstrip-item-indicator" />
           </div>

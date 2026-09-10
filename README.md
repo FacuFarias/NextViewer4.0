@@ -1,221 +1,92 @@
-# NextViewer 4.0
+# NextViewer 5.0 Clinical
 
-Visor DICOM web profesional basado en Cornerstone.js 3D, diseñado para conectarse con servidores PACS dcm4chee via DICOMweb.
+Visor web DICOM de consulta clínica basado en React, Cornerstone3D y DICOMweb.
+Esta rama deriva de NextViewer 4.0, pero no contiene flujos de entrenamiento de
+IA, segmentación, persistencia de anotaciones ni un servicio propio de informes.
 
-![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![React](https://img.shields.io/badge/React-18-blue.svg)
-![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue.svg)
-![Cornerstone.js](https://img.shields.io/badge/Cornerstone.js-3D-green.svg)
+> Uso previsto: consulta y revisión clínica. No está validado como estación de
+> diagnóstico primario.
 
-## Características
+## Alcance
 
-### Visualización
-- Visualización de imágenes DICOM de alta resolución
-- Windowing interactivo (brillo/contraste) con presets por modalidad
-- Navegación por series con filmstrip de miniaturas
-- DICOM overlay con información del paciente
-- Soporte para múltiples modalidades (CT, MR, DX, US, MG, etc.)
+- Acceso del personal mediante Keycloak OIDC Authorization Code + PKCE.
+- Enlaces restringidos para pacientes mediante `share_token` de NextRIS.
+- CT, MR, CR, DX, MG, US, XA, RF, NM, PT, SC y OT.
+- Stack, multiframe y MPR para CT/MR con geometría válida.
+- Window/level, pan, zoom, scroll, inversión, longitud, ángulo, bidireccional,
+  ROI circular/rectangular y flecha.
+- Mediciones y caché de imágenes únicamente en memoria durante la sesión.
+- Hanging protocols globales por modalidad y protocolos personales persistidos
+  en NextRIS para el personal autenticado.
 
-### MPR (Multi-Planar Reconstruction)
-- Visualización axial, sagital y coronal para estudios CT
-- Doble click para maximizar/restaurar viewports
-- Crosshair sincronizado entre planos
-- Navegación por scroll en cada plano
-
-### Herramientas de Medición
-- Medición de distancias
-- Flechas de anotación
-- ROI circular y rectangular
-- Medición de ángulos
-- Medición bidireccional
-
-### Funcionalidades Adicionales
-- Descarga de DICOM (serie individual o estudio completo) como ZIP
-- Panel de reportes con guardado local
-- Sidebar redimensionable
-- Interfaz responsive (desktop, tablet, móvil)
-- Configuración de features por administrador
-- Autenticación via Keycloak (OAuth2)
-
-## Requisitos
-
-- Node.js 18+ o 20+
-- Servidor dcm4chee Archive 5.x con DICOMweb habilitado
-- Keycloak configurado para autenticación
-
-## Instalación
-
-### Desarrollo
-
-```bash
-# Clonar el repositorio
-git clone https://github.com/FacuFarias/NextViewer4.0.git
-cd NextViewer4.0/dicom-viewer
-
-# Instalar dependencias
-npm install
-
-# Ejecutar en modo desarrollo
-npm run dev
-```
-
-### Producción (Docker)
-
-```bash
-# Construir la imagen
-docker build -t nextviewer4 .
-
-# Ejecutar
-docker run -p 3000:80 nextviewer4
-```
-
-### Con docker-compose
-
-```yaml
-services:
-  ohif:
-    build: ./dicom-viewer
-    container_name: nextviewer4
-    ports:
-      - "3000:80"
-    environment:
-      - TZ=America/Argentina/Buenos_Aires
-    depends_on:
-      - arc
-      - keycloak
-```
-
-## Configuración
-
-### Conexión a dcm4chee
-
-Edita `src/services/dicomWeb.ts`:
-
-```typescript
-const DEFAULT_CONFIG: DicomWebConfig = {
-  baseUrl: '/dcm4chee-arc/aets/DCM4CHEE/rs',
-  wadoUrl: '/dcm4chee-arc/aets/DCM4CHEE/wado',
-  username: 'admin',
-  password: 'tu-password',
-};
-```
-
-### Autenticación Keycloak
-
-Edita `src/services/auth.ts`:
-
-```typescript
-const KEYCLOAK_URL = '/auth/realms/dcm4che/protocol/openid-connect/token';
-const CLIENT_ID = 'dicom-viewer';
-```
-
-### Variables de Entorno
-
-Crea un archivo `.env`:
-
-```env
-VITE_DCM4CHEE_BASE_URL=/dcm4chee-arc/aets/DCM4CHEE/rs
-VITE_KEYCLOAK_URL=/auth/realms/dcm4che/protocol/openid-connect/token
-```
-
-## Estructura del Proyecto
-
-```
-dicom-viewer/
-├── src/
-│   ├── components/
-│   │   ├── AdminRoute.tsx      # Guard de rutas admin
-│   │   ├── ConfigPage.tsx      # Página de configuración
-│   │   ├── DicomOverlay.tsx    # Overlay DICOM en viewport
-│   │   ├── DicomViewer.tsx     # Componente principal
-│   │   ├── DownloadButton.tsx  # Botón de descarga DICOM
-│   │   ├── Filmstrip.tsx       # Barra de miniaturas
-│   │   ├── Icons.tsx           # Iconos SVG
-│   │   ├── MPRView.tsx         # Vista MPR 3 planos
-│   │   ├── ReportPanel.tsx     # Panel de reportes
-│   │   ├── ResizeHandle.tsx    # Handle para redimensionar
-│   │   ├── SeriesPanel.tsx     # Panel de series
-│   │   ├── StudyBrowser.tsx    # Lista de estudios
-│   │   └── Toolbar.tsx         # Barra de herramientas
-│   ├── hooks/
-│   │   └── useDicomViewer.ts   # Hook principal del visor
-│   ├── services/
-│   │   ├── auth.ts             # Servicio de autenticación
-│   │   ├── config.ts           # Servicio de configuración
-│   │   ├── cornerstone.ts      # Configuración Cornerstone
-│   │   ├── dicomWeb.ts         # Servicio DICOMweb
-│   │   └── download.ts         # Servicio de descarga
-│   ├── types/
-│   │   ├── config.ts           # Tipos de configuración
-│   │   └── dicom.ts            # Tipos DICOM
-│   ├── App.tsx                 # Componente raíz con rutas
-│   ├── App.css                 # Estilos principales
-│   └── main.tsx                # Punto de entrada
-├── Dockerfile                  # Configuración Docker
-├── nginx.conf                  # Configuración Nginx
-├── package.json
-├── tsconfig.json
-└── vite.config.ts
-```
+Quedan fuera de esta versión DICOM SR, SEG, PDF encapsulado, video, informes y
+comparación simultánea de múltiples estudios.
 
 ## Rutas
 
-| Ruta | Descripción | Acceso |
-|------|-------------|--------|
-| `/` | Lista de estudios | Público |
-| `/viewer/:studyInstanceUID` | Visor de estudio | Público |
-| `/config` | Configuración | Admin solamente |
+- `/viewer?StudyInstanceUIDs=<UID>`: contrato compatible con NextRIS.
+- `/viewer?StudyInstanceUIDs=<UID>&share_token=<token>`: enlace para paciente.
+- `/viewer/<UID>`: ruta interna alternativa.
+- `/callback`: retorno OIDC.
+- `/set-token.html?handoff_code=<CODE>&study_uid=<UID>`: handoff opaco de un
+  solo uso y 60 segundos. El código se intercambia por sesiones DICOM y
+  NextViewer, que permanecen únicamente en `sessionStorage`.
+- `/set-token.html?access_token=<JWT>&study_uid=<UID>`: compatibilidad temporal
+  con el puente legado; sus parámetros también se eliminan de inmediato.
+- `/healthz`: healthcheck del contenedor.
 
-## Herramientas de Desarrollo
+Se acepta exactamente un Study Instance UID por enlace. La raíz no muestra ni
+consulta el listado general de pacientes.
+
+## Desarrollo y validación
 
 ```bash
-# Ejecutar en modo desarrollo
-npm run dev
-
-# Compilar para producción
-npm run build
-
-# Vista previa de la compilación
-npm run preview
-
-# Lint
+cd dicom-viewer
+npm ci
+npm test
 npm run lint
+npm run build
 ```
 
-## Endpoints DICOMweb
+La configuración de producción se genera al iniciar el contenedor desde las
+variables documentadas en `dicom-viewer/.env.example`; ninguna credencial se
+compila en el frontend.
 
-El visor utiliza los siguientes endpoints de dcm4chee:
+Las pruebas incluyen fixtures sintéticos y anónimos de metadata para CR, RF,
+NM, PT, SC, multiframe, JPEG Lossless, JPEG-LS, JPEG 2000 y RLE. No contienen
+datos de pacientes ni sustituyen la prueba visual de decodificación con DICOM
+anonimizados aprobados para validación clínica.
 
-| Endpoint | Descripción |
-|----------|-------------|
-| `GET /studies` | Buscar estudios |
-| `GET /studies/{studyUID}/series` | Obtener series |
-| `GET /studies/{studyUID}/series/{seriesUID}/instances` | Obtener instancias |
-| `GET /studies/{studyUID}/series/{seriesUID}/instances/{instanceUID}/metadata` | Metadata completa |
-| `GET /wado?requestType=WADO&...` | Recuperar imágenes |
+## Hanging protocols
 
-## Configuración de Features
+Los defaults versionados son CT/MR con MPR y fallback stack, CR/DX frontal y
+lateral, MG RCC–LCC / RMLO–LMLO, y `1×1` para las modalidades restantes. El
+editor se abre desde `Herramientas → Hanging protocols` como panel superpuesto
+desde la izquierda. Los protocolos personales guardan sólo layout y reglas de
+matching; no guardan window/level, cámara, inversión, mediciones ni herramienta
+activa.
 
-Los administradores pueden habilitar/deshabilitar features desde `/config`:
+NextRIS expone bajo `/api/viewer/` el intercambio y renovación de sesión y el
+CRUD de protocolos. La migración requerida es
+`deployment/migrations/20260816_hanging_protocols.sql`. Las credenciales
+técnicas se configuran mediante `VIEWER_KEYCLOAK_*`; no están embebidas en el
+frontend ni en el backend.
 
-- **MPR**: Activa/desactiva el modo MPR para CT
-- **Descarga DICOM**: Permite descargar estudios como ZIP
-- **Herramientas de Medición**: Activa/desactiva anotaciones
-- **Presets W/L**: Muestra presets de window/level
-- **Filmstrip**: Muestra la barra de miniaturas
+## Despliegue y rollback
 
-## Licencia
+El servicio Compose `nextviewer5-clinical` escucha solamente en
+`127.0.0.1:30001`. El proxy HTTPS público `clinicacp.ddns.net:3000` apunta a ese
+puerto. El visor anterior permanece ejecutándose en `127.0.0.1:30000`.
 
-MIT License - ver [LICENSE](LICENSE) para más detalles.
+Rollback inmediato:
 
-## Créditos
+1. Establecer `VIEWER_HANDOFF_MODE=legacy` en el `.env` de NextRIS y reiniciar
+   `nextris-backend.service`.
+2. Cambiar en `/etc/nginx/sites-enabled/clinicacp` el upstream del bloque que
+   escucha en `3000` de `127.0.0.1:30001` a `127.0.0.1:30000`.
+3. Ejecutar `sudo nginx -t && sudo systemctl reload nginx`.
 
-- [Cornerstone.js](https://cornerstonejs.org/) - Librería de visualización DICOM
-- [dcm4chee](https://dcm4che.org/) - Archive PACS
-- [Keycloak](https://www.keycloak.org/) - Autenticación
-- [React](https://reactjs.org/) - Framework UI
-- [Vite](https://vitejs.dev/) - Build tool
+En este despliegue también quedó una copia previa exacta en
+`/etc/nginx/sites-available/clinicacp.pre-nextviewer5`.
 
-## Soporte
-
-Para issues y preguntas, usar el [Issue Tracker](https://github.com/FacuFarias/NextViewer4.0/issues).
+El rollback no requiere detener ni reconstruir ninguno de los dos visores.

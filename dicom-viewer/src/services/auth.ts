@@ -1,170 +1,101 @@
-const KEYCLOAK_URL = '/auth/realms/dcm4che/protocol/openid-connect/token';
-const CLIENT_ID = 'dcm4chee-arc-ui';
+import { UserManager, WebStorageStateStore, type User } from 'oidc-client-ts';
+import { getRuntimeConfig } from './runtimeConfig';
+import { clearTokenHandoff, getOrRefreshTokenHandoff, getTokenHandoff } from './tokenHandoff';
 
-// Keep the service credentials in one place. These are the credentials used
-// by the current local dcm4chee/Keycloak deployment.
-export const DICOM_USERNAME = 'admin';
-export const DICOM_PASSWORD = 'changeit';
+let manager: UserManager | null = null;
+let shareAccess = false;
 
-interface TokenResponse {
-  access_token: string;
-  refresh_token: string;
-  expires_in: number;
-  token_type: string;
-}
-
-let currentToken: string | null = null;
-let tokenExpiry: number = 0;
-let refreshToken: string | null = null;
-
-export async function getAccessToken(username: string, password: string): Promise<string> {
-  console.log('Getting access token...');
-  
-  if (currentToken && Date.now() < tokenExpiry) {
-    console.log('Using cached token');
-    return currentToken;
-  }
-
-  if (refreshToken) {
-    try {
-      console.log('Trying to refresh token');
-      return await refreshAccessToken();
-    } catch {
-      console.log('Refresh failed, getting new token');
-    }
-  }
-
-  console.log('Requesting new token from Keycloak');
-  const response = await fetch(KEYCLOAK_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
-    body: new URLSearchParams({
-      grant_type: 'password',
-      client_id: CLIENT_ID,
-      username,
-      password,
-      scope: 'openid',
-    }),
+function getUserManager(): UserManager {
+  if (manager) return manager;
+  const config = getRuntimeConfig();
+  manager = new UserManager({
+    authority: config.keycloakAuthority,
+    client_id: config.keycloakClientId,
+    redirect_uri: config.oidcRedirectUri,
+    post_logout_redirect_uri: config.oidcPostLogoutRedirectUri,
+    response_type: 'code',
+    scope: 'openid profile email',
+    automaticSilentRenew: false,
+    monitorSession: false,
+    userStore: new WebStorageStateStore({ store: window.sessionStorage }),
+    stateStore: new WebStorageStateStore({ store: window.sessionStorage }),
   });
+  return manager;
+}
 
-  if (!response.ok) {
-    console.error('Authentication failed:', response.status, response.statusText);
-    throw new Error(`Authentication failed: ${response.status} ${response.statusText}`);
+export function setShareAccess(enabled: boolean): void {
+  shareAccess = enabled;
+}
+
+export function isShareAccess(): boolean {
+  return shareAccess;
+}
+
+export async function getCurrentUser(): Promise<User | null> {
+  if (shareAccess) return null;
+  const user = await getUserManager().getUser();
+  return user && !user.expired ? user : null;
+}
+
+export async function ensureAuthenticated(
+  returnUrl: string,
+  studyInstanceUID: string
+): Promise<boolean> {
+  if (shareAccess) return true;
+  if (await getOrRefreshTokenHandoff(studyInstanceUID)) return true;
+  clearTokenHandoff();
+  const user = await getCurrentUser();
+  if (user) return true;
+
+  await getUserManager().signinRedirect({ state: { returnUrl } });
+  return false;
+}
+
+export async function handleSigninCallback(): Promise<string> {
+  const user = await getUserManager().signinRedirectCallback();
+  const state = user.state as { returnUrl?: string } | undefined;
+  const returnUrl = state?.returnUrl;
+  return returnUrl?.startsWith('/viewer') ? returnUrl : '/';
+}
+
+export async function getAccessToken(): Promise<string | null> {
+  if (shareAccess) return null;
+  const handoff = await getOrRefreshTokenHandoff();
+  if (handoff) return handoff.accessToken;
+  const user = await getCurrentUser();
+  if (!user?.access_token) throw new Error('La sesión clínica venció. Inicie sesión nuevamente.');
+  return user.access_token;
+}
+
+export async function getDicomRequestHeaders(
+  accept = 'application/dicom'
+): Promise<Record<string, string>> {
+  const headers: Record<string, string> = { Accept: accept };
+  const token = await getAccessToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return headers;
+}
+
+export async function clearClinicalSession(): Promise<void> {
+  const { clearClinicalMeasurements, purgeMemoryCache } = await import('./cornerstone');
+  clearClinicalMeasurements();
+  purgeMemoryCache();
+}
+
+export async function logout(): Promise<void> {
+  await clearClinicalSession();
+  if (shareAccess) {
+    window.sessionStorage.clear();
+    window.location.assign('/');
+    return;
   }
-
-  const data: TokenResponse = await response.json();
-  
-  currentToken = data.access_token;
-  refreshToken = data.refresh_token;
-  tokenExpiry = Date.now() + (data.expires_in * 1000) - 10000;
-
-  console.log('Token obtained successfully, expires in:', data.expires_in, 'seconds');
-  return currentToken;
-}
-
-async function refreshAccessToken(): Promise<string> {
-  if (!refreshToken) {
-    throw new Error('No refresh token available');
+  if (getTokenHandoff()) {
+    clearTokenHandoff();
+    window.location.assign('/');
+    return;
   }
-
-  const response = await fetch(KEYCLOAK_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
-    body: new URLSearchParams({
-      grant_type: 'refresh_token',
-      client_id: CLIENT_ID,
-      refresh_token: refreshToken,
-    }),
-  });
-
-  if (!response.ok) {
-    throw new Error(`Token refresh failed: ${response.status}`);
-  }
-
-  const data: TokenResponse = await response.json();
-  
-  currentToken = data.access_token;
-  refreshToken = data.refresh_token;
-  tokenExpiry = Date.now() + (data.expires_in * 1000) - 10000;
-
-  return currentToken;
-}
-
-export function clearToken(): void {
-  const previousCacheUserKey = getCacheUserKey();
-  currentToken = null;
-  refreshToken = null;
-  tokenExpiry = 0;
-
-  // Logout is currently owned by the host application. Keep the cleanup here
-  // so any caller that clears the session also removes the local DICOM data
-  // belonging to the previous user.
-  void import('./dicomCache')
-    .then(({ clearPersistentDicomCacheForUser }) => clearPersistentDicomCacheForUser(previousCacheUserKey))
-    .catch(error => console.warn('[DICOM cache] Failed to clear user cache', error));
-  void import('./preloadQueue')
-    .then(({ clearPreloadQueue }) => clearPreloadQueue(previousCacheUserKey))
-    .catch(error => console.warn('[Preload] Failed to clear user queue', error));
-}
-
-export function decodeToken(token: string): any {
-  try {
-    const base64Url = token.split('.')[1];
-    const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
-    const jsonPayload = decodeURIComponent(
-      atob(base64)
-        .split('')
-        .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
-        .join('')
-    );
-    return JSON.parse(jsonPayload);
-  } catch (error) {
-    console.error('Failed to decode token:', error);
-    return null;
-  }
-}
-
-export function getCurrentToken(): string | null {
-  return currentToken;
-}
-
-/**
- * Returns a stable, non-sensitive identifier that can be used to namespace
- * browser-side DICOM caches. The token itself is never persisted in the cache
- * key or in IndexedDB.
- */
-export function getCacheUserKey(): string {
-  const decoded = currentToken ? decodeToken(currentToken) : null;
-  const identity = String(decoded?.sub || decoded?.preferred_username || 'anonymous');
-
-  let hash = 2166136261;
-  for (let index = 0; index < identity.length; index += 1) {
-    hash ^= identity.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-
-  return (hash >>> 0).toString(16);
-}
-
-export function isAdmin(): boolean {
-  if (!currentToken) return false;
-  
-  const decoded = decodeToken(currentToken);
-  if (!decoded) return false;
-  
-  const roles = decoded.realm_access?.roles || [];
-  return roles.includes('admin');
-}
-
-export function getCurrentUser(): string | null {
-  if (!currentToken) return null;
-  
-  const decoded = decodeToken(currentToken);
-  if (!decoded) return null;
-  
-  return decoded.preferred_username || null;
+  const user = await getCurrentUser();
+  const userManager = getUserManager();
+  await userManager.removeUser();
+  await userManager.signoutRedirect({ id_token_hint: user?.id_token });
 }

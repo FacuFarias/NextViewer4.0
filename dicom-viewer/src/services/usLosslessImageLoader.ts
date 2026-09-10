@@ -7,12 +7,7 @@ import {
 } from '@cornerstonejs/dicom-image-loader';
 import * as dicomParser from 'dicom-parser';
 import { Decoder } from 'jpeg-lossless-decoder-js';
-import {
-  DICOM_PASSWORD,
-  DICOM_USERNAME,
-  getAccessToken,
-  getCacheUserKey,
-} from './auth';
+import { getDicomRequestHeaders } from './auth';
 
 const IMAGE_SCHEME = 'usjpeg';
 
@@ -182,14 +177,10 @@ function createColorImage(
 
 async function loadUsLosslessImage(imageId: string, signal: AbortSignal): Promise<Record<string, unknown>> {
   const url = imageId.slice(`${IMAGE_SCHEME}:`.length);
-  const token = await getAccessToken(DICOM_USERNAME, DICOM_PASSWORD);
   const response = await fetch(url, {
     signal,
-    headers: {
-      Accept: 'application/dicom',
-      Authorization: `Bearer ${token}`,
-      'X-Dicom-Cache-User': getCacheUserKey(),
-    },
+    headers: await getDicomRequestHeaders('application/dicom'),
+    cache: 'no-store',
   });
   if (!response.ok) throw new Error(`US DICOM error: ${response.status} ${response.statusText}`);
 

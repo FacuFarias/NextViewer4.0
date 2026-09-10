@@ -8,6 +8,20 @@ export const IconWindowLevel: React.FC<{ className?: string }> = ({ className })
   </svg>
 );
 
+export const IconPan: React.FC<{ className?: string }> = ({ className }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 2v20M2 12h20" />
+    <path d="m8 6 4-4 4 4M8 18l4 4 4-4M6 8l-4 4 4 4M18 8l4 4-4 4" />
+  </svg>
+);
+
+export const IconZoom: React.FC<{ className?: string }> = ({ className }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="10.5" cy="10.5" r="6.5" />
+    <path d="m15.5 15.5 5 5M7.5 10.5h6M10.5 7.5v6" />
+  </svg>
+);
+
 export const IconLength: React.FC<{ className?: string }> = ({ className }) => (
   <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M4 20L20 4" />
@@ -51,10 +65,46 @@ export const IconRectangle: React.FC<{ className?: string }> = ({ className }) =
   </svg>
 );
 
+export const IconEllipse: React.FC<{ className?: string }> = ({ className }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <ellipse cx="12" cy="12" rx="9" ry="6" />
+  </svg>
+);
+
+export const IconProbe: React.FC<{ className?: string }> = ({ className }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="3" />
+    <path d="M12 2v5M12 17v5M2 12h5M17 12h5" />
+  </svg>
+);
+
+export const IconFreehand: React.FC<{ className?: string }> = ({ className }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M3 17c3-9 5 3 8-5s5 7 10-5" />
+  </svg>
+);
+
+export const IconMouseButton: React.FC<{ className?: string; button: 'primary' | 'auxiliary' | 'secondary' }> = ({ className, button }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 2C7.6 2 5 5.2 5 9.5v5C5 19 7.8 22 12 22s7-3 7-7.5v-5C19 5.2 16.4 2 12 2Z" />
+    <path d="M12 2v7M5.2 9h13.6" />
+    {button === 'primary' && <path d="M11 3.2C8 3.6 6.5 5.9 6.3 8H11Z" fill="currentColor" stroke="none" />}
+    {button === 'auxiliary' && <rect x="11" y="3" width="2" height="5" rx="1" fill="currentColor" stroke="none" />}
+    {button === 'secondary' && <path d="M13 3.2C16 3.6 17.5 5.9 17.7 8H13Z" fill="currentColor" stroke="none" />}
+  </svg>
+);
+
 export const IconReset: React.FC<{ className?: string }> = ({ className }) => (
   <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
     <path d="M3 3v5h5" />
+  </svg>
+);
+
+export const IconUndo: React.FC<{ className?: string }> = ({ className }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M9 14 4 9l5-5" />
+    <path d="M4 9h10a6 6 0 0 1 0 12h-1" />
   </svg>
 );
 

@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { DicomStudy, DicomSeries } from '../types/dicom';
-import { downloadSeriesAsZip } from '../services/download';
-import { useTranslation } from '../i18n';
+import { downloadSeriesAsZip, downloadStudyAsZip } from '../services/download';
 
 interface DownloadButtonProps {
   study: DicomStudy;
@@ -9,7 +8,6 @@ interface DownloadButtonProps {
 }
 
 const DownloadButton: React.FC<DownloadButtonProps> = ({ study, currentSeries }) => {
-  const { t } = useTranslation();
   const [isDownloading, setIsDownloading] = useState(false);
   const [progress, setProgress] = useState({ current: 0, total: 0 });
 
@@ -29,7 +27,7 @@ const DownloadButton: React.FC<DownloadButtonProps> = ({ study, currentSeries })
       );
     } catch (error) {
       console.error('Download failed:', error);
-      alert(t('download.errorSeries'));
+      alert('Error al descargar la serie');
     } finally {
       setIsDownloading(false);
       setProgress({ current: 0, total: 0 });
@@ -38,75 +36,12 @@ const DownloadButton: React.FC<DownloadButtonProps> = ({ study, currentSeries })
 
   const handleDownloadAll = async () => {
     setIsDownloading(true);
-    
+    setProgress({ current: 0, total: study.numberOfInstances || 0 });
     try {
-      const JSZip = (await import('jszip')).default;
-      const { saveAs } = await import('file-saver');
-      const { DICOM_PASSWORD, DICOM_USERNAME, getAccessToken } = await import('../services/auth');
-      const { dicomWebService } = await import('../services/dicomWeb');
-
-      const seriesWithInstances: Array<{ series: DicomSeries; instances: any[] }> = [];
-      
-      for (const series of study.series) {
-        const instances = await dicomWebService.getSeriesInstances(
-          study.studyInstanceUID,
-          series.seriesInstanceUID
-        );
-        seriesWithInstances.push({ series, instances });
-      }
-
-      let totalInstances = 0;
-      seriesWithInstances.forEach(s => {
-        totalInstances += s.instances.length;
-      });
-      
-      setProgress({ current: 0, total: totalInstances });
-
-      const zip = new JSZip();
-      let downloaded = 0;
-
-      for (const { series, instances } of seriesWithInstances) {
-        const seriesName = `Serie_${series.seriesNumber || 1}_${series.seriesDescription || series.modality}`.replace(/[^a-zA-Z0-9_-]/g, '_');
-        const folder = zip.folder(seriesName);
-        if (!folder) continue;
-
-        for (const instance of instances) {
-          try {
-            const token = await getAccessToken(DICOM_USERNAME, DICOM_PASSWORD);
-            const wadoUrl = dicomWebService.getInstanceWadoUriUrl(
-              study.studyInstanceUID,
-              series.seriesInstanceUID,
-              instance.sopInstanceUID
-            );
-
-            const response = await fetch(wadoUrl, {
-              headers: { 'Authorization': `Bearer ${token}` },
-            });
-
-            if (response.ok) {
-              const blob = await response.blob();
-              folder.file(`${instance.sopInstanceUID}.dcm`, blob);
-            }
-            
-            downloaded++;
-            setProgress({ current: downloaded, total: totalInstances });
-          } catch (error) {
-            console.error(`Error downloading instance:`, error);
-          }
-        }
-      }
-
-      const content = await zip.generateAsync({
-        type: 'blob',
-        compression: 'DEFLATE',
-      });
-
-      const patientName = study.patientName || study.patientID || 'study';
-      const safeName = patientName.replace(/[^a-zA-Z0-9_-]/g, '_');
-      saveAs(content, `${safeName}_${study.studyInstanceUID}.zip`);
+      await downloadStudyAsZip(study, (current, total) => setProgress({ current, total }));
     } catch (error) {
       console.error('Download failed:', error);
-      alert(t('download.errorStudy'));
+      alert('Error al descargar el estudio');
     } finally {
       setIsDownloading(false);
       setProgress({ current: 0, total: 0 });
@@ -115,7 +50,7 @@ const DownloadButton: React.FC<DownloadButtonProps> = ({ study, currentSeries })
 
   return (
     <div className="download-section">
-      <h4>{t('download.title')}</h4>
+      <h4>Descargar</h4>
       
       {currentSeries && (
         <button
@@ -126,11 +61,11 @@ const DownloadButton: React.FC<DownloadButtonProps> = ({ study, currentSeries })
           {isDownloading ? (
             <>
               <span className="download-spinner"></span>
-              {t('download.downloading', { current: progress.current, total: progress.total })}
+              Descargando... {progress.current}/{progress.total}
             </>
           ) : (
             <>
-              {t('download.currentSeries', { count: currentSeries.instances.length })}
+              📥 Serie actual ({currentSeries.instances.length} imgs)
             </>
           )}
         </button>
@@ -144,11 +79,11 @@ const DownloadButton: React.FC<DownloadButtonProps> = ({ study, currentSeries })
         {isDownloading ? (
           <>
             <span className="download-spinner"></span>
-            {t('download.downloading', { current: progress.current, total: progress.total })}
+            Descargando... {progress.current}/{progress.total}
           </>
         ) : (
           <>
-            {t('download.allStudy')}
+            📦 Todo el estudio
           </>
         )}
       </button>
@@ -157,7 +92,7 @@ const DownloadButton: React.FC<DownloadButtonProps> = ({ study, currentSeries })
         <div className="download-progress">
           <div 
             className="download-progress-bar"
-            style={{ width: `${(progress.current / progress.total) * 100}%` }}
+            style={{ width: `${progress.total ? (progress.current / progress.total) * 100 : 0}%` }}
           />
         </div>
       )}

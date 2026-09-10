@@ -15,17 +15,26 @@ export interface DicomStudy {
 }
 
 export interface DicomSeries {
+  /** Study that owns the series. Required when a patient prior is displayed. */
+  studyInstanceUID?: string;
   seriesInstanceUID: string;
   seriesNumber: number;
   seriesDescription: string;
   modality: string;
   numberOfInstances?: number;
+  bodyPartExamined?: string;
+  laterality?: string;
+  imageLaterality?: string;
+  viewPosition?: string;
   instances: DicomInstance[];
 }
 
 export interface DicomInstance {
   sopInstanceUID: string;
+  sopClassUID?: string;
   instanceNumber: number;
+  numberOfFrames?: number;
+  frameNumber?: number;
   rows: number;
   columns: number;
   bitsAllocated: number;
@@ -44,16 +53,16 @@ export interface DicomInstance {
   frameOfReferenceUID?: string;
   modality?: string;
   seriesNumber?: number;
+  transferSyntaxUID?: string;
+  bodyPartExamined?: string;
+  laterality?: string;
+  imageLaterality?: string;
+  viewPosition?: string;
 }
 
 export interface DicomWebConfig {
   baseUrl: string;
-  wadoUrl?: string;
-  username?: string;
-  password?: string;
-  studyInstanceUID?: string;
-  seriesInstanceUID?: string;
-  sopInstanceUID?: string;
+  wadoUrl: string;
 }
 
 export interface WindowLevel {
@@ -62,7 +71,23 @@ export interface WindowLevel {
 }
 
 export type ViewMode = 'studies' | 'viewer';
-export type ViewerLayoutMode = 'stack' | 'mpr';
+export type ViewerLayoutMode =
+  | '1x1' | '1x2' | '1x3'
+  | '2x1' | '2x2' | '2x3'
+  | '3x1' | '3x2' | '3x3'
+  | 'mpr';
+
+export interface ClinicalViewportState {
+  id: string;
+  slot: number;
+  label?: string;
+  series: DicomSeries | null;
+  instance: DicomInstance | null;
+  imageIndex: number;
+  windowLevel: WindowLevel;
+  isLoaded: boolean;
+  error?: string;
+}
 
 export interface ViewerState {
   viewMode: ViewMode;
@@ -75,6 +100,8 @@ export interface ViewerState {
   currentInstance: DicomInstance | null;
   windowLevel: WindowLevel;
   imageIndex: number;
+  activeViewportId: string;
+  viewports: ClinicalViewportState[];
 }
 
 export interface StudySearchParams {
