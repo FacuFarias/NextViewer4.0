@@ -16,12 +16,19 @@ const rule = (slot: number, label: string, match: HangingViewportRule['match']):
 });
 
 export const SYSTEM_HANGING_PROTOCOLS: HangingProtocol[] = [
-  ...(['CT', 'MR'] as const).map(modality => ({
-    id: `system-${modality.toLowerCase()}`,
-    name: `${modality} clínico`, modality, layout: '1x1' as const,
-    isActive: true, source: 'system' as const,
-    viewportRules: [rule(0, 'Serie principal', { modality })],
-  })),
+  {
+    id: 'system-ct', name: 'CT clínico', modality: 'CT', layout: '1x1',
+    isActive: true, source: 'system',
+    viewportRules: [rule(0, 'Serie principal', { modality: 'CT' })],
+  },
+  {
+    id: 'system-mr', name: 'MR clínico', modality: 'MR', layout: '1x2',
+    isActive: true, source: 'system',
+    viewportRules: [
+      rule(0, 'Serie principal', { modality: 'MR' }),
+      rule(1, 'Serie secundaria', { modality: 'MR' }),
+    ],
+  },
   ...(['CR', 'DX'] as const).map(modality => ({
     id: `system-${modality.toLowerCase()}`,
     name: `${modality} frontal y lateral`, modality, layout: '1x2' as const,
@@ -108,11 +115,15 @@ export function selectHangingProtocol(
   personalProtocols: HangingProtocol[]
 ): HangingProtocol {
   const modality = resolvePrimaryModality(study);
+  const isMr = modality === 'MR';
   return personalProtocols.find(protocol => protocol.modality === modality && protocol.isActive) ||
     SYSTEM_HANGING_PROTOCOLS.find(protocol => protocol.modality === modality) || {
-      id: `fallback-${modality.toLowerCase()}`, name: `${modality} 1×1`, modality,
-      layout: '1x1', isActive: true, source: 'system',
-      viewportRules: [rule(0, 'Serie principal', { modality })],
+      id: `fallback-${modality.toLowerCase()}`, name: `${modality} ${isMr ? '1×2' : '1×1'}`, modality,
+      layout: isMr ? '1x2' : '1x1', isActive: true, source: 'system',
+      viewportRules: [
+        rule(0, 'Serie principal', { modality }),
+        ...(isMr ? [rule(1, 'Serie secundaria', { modality })] : []),
+      ],
     };
 }
 

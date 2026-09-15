@@ -20,19 +20,20 @@ import {
   IconMouseButton,
   IconReset,
   IconUndo,
+  IconReferenceLines,
   IconInvert,
   IconSettings,
 } from './Icons';
 
-const MAX_GRID_SIZE = 3;
+const GRID_LAYOUTS: GridLayout[] = [
+  '1x1', '1x2', '1x3',
+  '2x1', '2x2', '2x3',
+  '3x1', '3x2', '3x3',
+];
 
 function gridDimensions(layout: GridLayout): [number, number] {
   const [rows, columns] = layout.split('x').map(Number);
   return [rows, columns];
-}
-
-function gridLayout(rows: number, columns: number): GridLayout {
-  return `${rows}x${columns}` as GridLayout;
 }
 
 interface LayoutSelectorProps {
@@ -56,12 +57,8 @@ function LayoutPreview({ layout }: { layout: HangingLayout }) {
 
 export const LayoutSelector: React.FC<LayoutSelectorProps> = ({ layout, onLayoutChange }) => {
   const [open, setOpen] = useState(false);
-  const [hoveredLayout, setHoveredLayout] = useState<GridLayout | null>(null);
   const selectorRef = useRef<HTMLDivElement>(null);
   const currentLabel = layout === 'mpr' ? 'MPR' : layout.replace('x', '×');
-  const currentGridLayout: GridLayout = layout === 'mpr' ? '1x1' : layout;
-  const highlightedLayout = hoveredLayout || currentGridLayout;
-  const [highlightedRows, highlightedColumns] = gridDimensions(highlightedLayout);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -95,38 +92,26 @@ export const LayoutSelector: React.FC<LayoutSelectorProps> = ({ layout, onLayout
         <span className="layout-selector-chevron" aria-hidden="true">⌄</span>
       </button>
       {open && (
-        <div className="layout-selector-menu" role="dialog" aria-label="Seleccionar layout">
-          <div className="layout-selector-menu-label" aria-live="polite">{highlightedLayout.replace('x', '×')}</div>
-          <div
-            className="layout-selector-matrix"
-            role="grid"
-            aria-label={`Seleccionar hasta ${MAX_GRID_SIZE} por ${MAX_GRID_SIZE}`}
-            onMouseLeave={() => setHoveredLayout(null)}
-          >
-            {Array.from({ length: MAX_GRID_SIZE * MAX_GRID_SIZE }, (_, index) => {
-              const row = Math.floor(index / MAX_GRID_SIZE) + 1;
-              const column = (index % MAX_GRID_SIZE) + 1;
-              const option = gridLayout(row, column);
-              const highlighted = row <= highlightedRows && column <= highlightedColumns;
-              return (
-                <button
-                  key={option}
-                  type="button"
-                  className={`layout-matrix-cell${highlighted ? ' highlighted' : ''}${layout === option ? ' active' : ''}`}
-                  role="gridcell"
-                  aria-label={`Layout ${row} por ${column}`}
-                  aria-selected={layout === option}
-                  title={`${row}×${column}`}
-                  onMouseEnter={() => setHoveredLayout(option)}
-                  onFocus={() => setHoveredLayout(option)}
-                  onClick={() => {
-                    onLayoutChange(option);
-                    setHoveredLayout(null);
-                    setOpen(false);
-                  }}
-                />
-              );
-            })}
+        <div className="layout-selector-menu" role="menu" aria-label="Seleccionar layout">
+          <div className="layout-selector-menu-header">Distribución</div>
+          <div className="layout-options-grid">
+            {GRID_LAYOUTS.map(option => (
+              <button
+                key={option}
+                type="button"
+                className={`layout-option${layout === option ? ' active' : ''}`}
+                role="menuitemradio"
+                aria-checked={layout === option}
+                onClick={() => {
+                  onLayoutChange(option);
+                  setOpen(false);
+                }}
+              >
+                <LayoutPreview layout={option} />
+                <span>{option.replace('x', '×')}</span>
+                {layout === option && <span className="layout-option-check" aria-hidden="true">✓</span>}
+              </button>
+            ))}
           </div>
         </div>
       )}
@@ -138,6 +123,10 @@ interface ToolbarProps {
   windowLevel: WindowLevel;
   onWindowLevelChange: (windowWidth: number, windowCenter: number) => void;
   modality?: string;
+  mouseToolBindings?: MouseToolBindings;
+  onMouseToolChange?: (button: ConfigurableMouseButton, toolName: ClinicalMouseTool) => void;
+  shiftMouseToolBindings?: MouseToolBindings;
+  onShiftMouseToolChange?: (button: ConfigurableMouseButton, toolName: ClinicalMouseTool) => void;
 }
 
 interface WindowPreset {
@@ -189,22 +178,32 @@ const ANNOTATION_TOOLS: ClinicalToolOption[] = [
   { name: 'PlanarFreehandROI', Icon: IconFreehand, title: 'ROI a mano alzada', shortTitle: 'Mano alzada' },
 ];
 
+const PRIMARY_TOOLS = NAVIGATION_TOOLS.filter(({ name }) =>
+  name === 'WindowLevel' || name === 'Pan' || name === 'Zoom'
+);
+
+function availableToolOptions(annotationsEnabled: boolean): ClinicalToolOption[] {
+  return [
+    ...NAVIGATION_TOOLS,
+    ...(annotationsEnabled ? ANNOTATION_TOOLS : []),
+  ];
+}
+
 const MOUSE_BUTTONS: Array<{ value: ConfigurableMouseButton; label: string }> = [
   { value: 'primary', label: 'Clic izquierdo' },
   { value: 'auxiliary', label: 'Clic central' },
   { value: 'secondary', label: 'Clic derecho' },
 ];
 
-const MouseToolSelector: React.FC<{
-  button: ConfigurableMouseButton;
-  toolName: ClinicalMouseTool;
-  options: ClinicalToolOption[];
-  onChange: (button: ConfigurableMouseButton, toolName: ClinicalMouseTool) => void;
-}> = ({ button, toolName, options, onChange }) => {
+const MeasurementSelector: React.FC<{
+  activeTool: ClinicalMouseTool;
+  onToolChange?: (toolName: ClinicalMouseTool) => void;
+}> = ({ activeTool, onToolChange }) => {
   const [open, setOpen] = useState(false);
   const selectorRef = useRef<HTMLDivElement>(null);
-  const currentTool = options.find(tool => tool.name === toolName) || NAVIGATION_TOOLS[0];
-  const buttonLabel = MOUSE_BUTTONS.find(item => item.value === button)?.label || 'Botón del mouse';
+  const selectedTool = ANNOTATION_TOOLS.find(tool => tool.name === activeTool);
+  const currentTool = selectedTool || ANNOTATION_TOOLS[0];
+  const CurrentIcon = currentTool.Icon;
 
   useEffect(() => {
     if (!open) return undefined;
@@ -223,31 +222,44 @@ const MouseToolSelector: React.FC<{
   }, [open]);
 
   return (
-    <div ref={selectorRef} className={`mouse-tool-selector${open ? ' open' : ''}`}>
+    <div ref={selectorRef} className={`measurement-selector${open ? ' open' : ''}${selectedTool ? ' active' : ''}`}>
       <button
         type="button"
-        className="mouse-tool-trigger"
+        className="measurement-selector-main"
+        onClick={() => onToolChange?.(currentTool.name)}
+        title={currentTool.title}
+        aria-label={`Activar ${currentTool.title}`}
+        aria-pressed={Boolean(selectedTool)}
+      >
+        <CurrentIcon className="annotation-icon" />
+        <span className="toolbar-button-label">Medir</span>
+      </button>
+      <button
+        type="button"
+        className="measurement-selector-toggle"
         onClick={() => setOpen(previous => !previous)}
+        title="Elegir herramienta de medición o anotación"
+        aria-label="Elegir herramienta de medición o anotación"
         aria-haspopup="menu"
         aria-expanded={open}
-        title={`${buttonLabel}: ${currentTool.title}`}
       >
-        <IconMouseButton className="mouse-binding-icon" button={button} />
-        <span className="mouse-tool-current-name">{currentTool.shortTitle}</span>
-        <span className="mouse-tool-chevron" aria-hidden="true">⌄</span>
+        <span aria-hidden="true">⌄</span>
       </button>
-      {open && <div className="mouse-tool-menu" role="menu" aria-label={`Herramienta para ${buttonLabel.toLowerCase()}`}>
-        <strong>{buttonLabel}</strong>
-        <div className="mouse-tool-options">
-          {options.map(({ name, Icon, title, shortTitle }) => (
+      {open && <div className="measurement-selector-menu" role="menu" aria-label="Mediciones y anotaciones">
+        <div className="measurement-selector-menu-header">
+          <strong>Medición y anotación</strong>
+          <span>Selecciona una herramienta</span>
+        </div>
+        <div className="measurement-selector-options">
+          {ANNOTATION_TOOLS.map(({ name, Icon, title, shortTitle }) => (
             <button
               key={name}
               type="button"
-              className={`mouse-tool-option${name === toolName ? ' active' : ''}`}
+              className={`measurement-option${activeTool === name ? ' active' : ''}`}
               role="menuitemradio"
-              aria-checked={name === toolName}
+              aria-checked={activeTool === name}
               onClick={() => {
-                onChange(button, name);
+                onToolChange?.(name);
                 setOpen(false);
               }}
               title={title}
@@ -268,96 +280,106 @@ export const AnnotationToolbar: React.FC<{
   onResetView?: () => void;
   onInvertColors?: () => void;
   onUndo?: () => void;
+  onReferenceLinesToggle?: () => void;
+  referenceLinesEnabled?: boolean;
   layout?: HangingLayout;
   onLayoutChange?: (layout: GridLayout) => void;
   toolsSidebarOpen?: boolean;
   onToolsToggle?: () => void;
-  mouseToolBindings?: MouseToolBindings;
-  onMouseToolChange?: (button: ConfigurableMouseButton, toolName: ClinicalMouseTool) => void;
   mobile?: boolean;
 }> = ({
   activeTool = 'WindowLevel', onToolChange, onResetView, onInvertColors, onUndo,
+  onReferenceLinesToggle, referenceLinesEnabled = false,
   layout, onLayoutChange, toolsSidebarOpen = false, onToolsToggle,
-  mouseToolBindings, onMouseToolChange, mobile = false,
+  mobile = false,
 }) => {
   const config = getConfig();
-  const availableTools = [
-    ...NAVIGATION_TOOLS,
-    ...(config.annotationsEnabled ? ANNOTATION_TOOLS : []),
-  ];
+  const availableTools = availableToolOptions(config.annotationsEnabled);
 
   return (
     <div className={`annotation-toolbar${mobile ? ' annotation-toolbar-mobile' : ''}`} aria-label="Herramientas del visor">
-      {!mobile && mouseToolBindings && onMouseToolChange
-        ? MOUSE_BUTTONS.map(({ value }) => <MouseToolSelector
-            key={value}
-            button={value}
-            toolName={mouseToolBindings[value]}
-            options={availableTools}
-            onChange={onMouseToolChange}
-          />)
-        : availableTools.map(({ name, Icon, title }) => (
-        <button
-          key={name}
-          type="button"
-          className={`annotation-icon-btn ${activeTool === name ? 'active' : ''}`}
-          onClick={() => onToolChange?.(name)}
-          title={title}
-          aria-label={title}
-          aria-pressed={activeTool === name}
-        >
-          <Icon className="annotation-icon" />
-        </button>
-      ))}
-      
-      <div className="toolbar-divider" />
+      {!mobile ? <>
+        <div className="toolbar-group toolbar-mode-group" role="group" aria-label="Herramienta principal">
+          {PRIMARY_TOOLS.map(({ name, Icon, title, shortTitle }) => (
+            <button
+              key={name}
+              type="button"
+              className={`toolbar-mode-btn${activeTool === name ? ' active' : ''}`}
+              onClick={() => onToolChange?.(name)}
+              title={title}
+              aria-label={`Activar ${title}`}
+              aria-pressed={activeTool === name}
+            >
+              <Icon className="annotation-icon" />
+              <span>{shortTitle}</span>
+            </button>
+          ))}
+        </div>
+        {config.annotationsEnabled && <>
+          <div className="toolbar-divider" aria-hidden="true" />
+          <MeasurementSelector activeTool={activeTool} onToolChange={onToolChange} />
+        </>}
+      </> : availableTools.map(({ name, Icon, title }) => (
+          <button
+            key={name}
+            type="button"
+            className={`annotation-icon-btn ${activeTool === name ? 'active' : ''}`}
+            onClick={() => onToolChange?.(name)}
+            title={title}
+            aria-label={title}
+            aria-pressed={activeTool === name}
+          >
+            <Icon className="annotation-icon" />
+          </button>
+        ))}
 
-      <button
-        type="button"
-        className="annotation-icon-btn"
-        onClick={onUndo}
-        title="Deshacer (Ctrl+Z)"
-        aria-label="Deshacer última acción"
-      >
-        <IconUndo className="annotation-icon" />
-      </button>
-      
-      <button
-        type="button"
-        className="annotation-icon-btn"
-        onClick={onResetView}
-        title="Restablecer vista"
-        aria-label="Restablecer vista"
-      >
-        <IconReset className="annotation-icon" />
-      </button>
-      
-      <button
-        type="button"
-        className="annotation-icon-btn"
-        onClick={onInvertColors}
-        title="Invertir colores"
-        aria-label="Invertir colores"
-      >
-        <IconInvert className="annotation-icon" />
-      </button>
+      <div className="toolbar-divider" aria-hidden="true" />
+      <div className="toolbar-group toolbar-action-group" role="group" aria-label="Acciones de visualización">
+        <button type="button" className="annotation-icon-btn" onClick={onUndo} title="Deshacer (Ctrl+Z)" aria-label="Deshacer última acción">
+          <IconUndo className="annotation-icon" />
+        </button>
+        <button type="button" className="toolbar-action-btn" onClick={onInvertColors} title="Invertir colores" aria-label="Invertir colores">
+          <IconInvert className="annotation-icon" />
+          <span className="toolbar-button-label">Invertir</span>
+        </button>
+        <button type="button" className="toolbar-action-btn" onClick={onResetView} title="Restablecer vista" aria-label="Restablecer vista">
+          <IconReset className="annotation-icon" />
+          <span className="toolbar-button-label">Restablecer</span>
+        </button>
+      </div>
+
+      {onReferenceLinesToggle && <>
+        <div className="toolbar-divider" aria-hidden="true" />
+        <button
+          type="button"
+          className={`toolbar-sync-btn${referenceLinesEnabled ? ' active' : ''}`}
+          onClick={onReferenceLinesToggle}
+          title={referenceLinesEnabled ? 'Ocultar líneas de referencia entre viewports' : 'Mostrar líneas de referencia entre viewports'}
+          aria-label={referenceLinesEnabled ? 'Desactivar referencias entre viewports' : 'Activar referencias entre viewports'}
+          aria-pressed={referenceLinesEnabled}
+        >
+          <IconReferenceLines className="annotation-icon" />
+          <span className="toolbar-button-label">Referencias</span>
+          <span className="toolbar-toggle-state" aria-hidden="true">{referenceLinesEnabled ? 'ON' : 'OFF'}</span>
+        </button>
+      </>}
 
       {layout && onLayoutChange && <>
-        <div className="toolbar-divider" />
+        <div className="toolbar-divider" aria-hidden="true" />
         <LayoutSelector layout={layout} onLayoutChange={onLayoutChange} />
       </>}
 
       {onToolsToggle && <button
-        type="button"
-        className={`annotation-icon-btn tools-sidebar-toolbar-toggle${toolsSidebarOpen ? ' active' : ''}`}
-        onClick={onToolsToggle}
-        title="Abrir información y herramientas"
-        aria-label="Abrir información y herramientas"
-        aria-controls="clinical-tools-sidebar"
-        aria-expanded={toolsSidebarOpen}
-      >
-        <IconSettings className="annotation-icon" />
-      </button>}
+          type="button"
+          className={`annotation-icon-btn tools-sidebar-toolbar-toggle${toolsSidebarOpen ? ' active' : ''}`}
+          onClick={onToolsToggle}
+          title="Abrir configuración y herramientas secundarias"
+          aria-label="Abrir configuración y herramientas secundarias"
+          aria-controls="clinical-tools-sidebar"
+          aria-expanded={toolsSidebarOpen}
+        >
+          <IconSettings className="annotation-icon" />
+        </button>}
     </div>
   );
 };
@@ -366,6 +388,10 @@ const Toolbar: React.FC<ToolbarProps> = ({
   windowLevel,
   onWindowLevelChange,
   modality,
+  mouseToolBindings,
+  onMouseToolChange,
+  shiftMouseToolBindings,
+  onShiftMouseToolChange,
 }) => {
   const [showPresets, setShowPresets] = useState(false);
   const config = getConfig();
@@ -461,6 +487,47 @@ const Toolbar: React.FC<ToolbarProps> = ({
           )}
         </div>
       )}
+
+      {mouseToolBindings && onMouseToolChange && <div className="toolbar-section mouse-bindings-panel">
+        <div className="mouse-bindings-heading">
+          <h4>Asignación del ratón</h4>
+          <span>Herramientas por botón</span>
+        </div>
+        <div className="mouse-binding-rows">
+          {MOUSE_BUTTONS.map(({ value, label }) => <label key={value} className="mouse-binding-row">
+            <span className="mouse-binding-row-label">
+              <IconMouseButton className="mouse-binding-icon" button={value} />
+              <span>{label}</span>
+            </span>
+            <select
+              value={mouseToolBindings[value]}
+              onChange={event => onMouseToolChange(value, event.target.value as ClinicalMouseTool)}
+              aria-label={`Herramienta para ${label.toLowerCase()}`}
+            >
+              {availableToolOptions(config.annotationsEnabled).map(option => <option key={option.name} value={option.name}>{option.shortTitle}</option>)}
+            </select>
+          </label>)}
+        </div>
+
+        {shiftMouseToolBindings && onShiftMouseToolChange && <details className="shift-bindings-details">
+          <summary>Combinaciones con Shift</summary>
+          <div className="mouse-binding-rows">
+            {MOUSE_BUTTONS.map(({ value, label }) => <label key={value} className="mouse-binding-row">
+              <span className="mouse-binding-row-label">
+                <IconMouseButton className="mouse-binding-icon" button={value} />
+                <span>Shift + {label.toLowerCase()}</span>
+              </span>
+              <select
+                value={shiftMouseToolBindings[value]}
+                onChange={event => onShiftMouseToolChange(value, event.target.value as ClinicalMouseTool)}
+                aria-label={`Herramienta para Shift y ${label.toLowerCase()}`}
+              >
+                {availableToolOptions(config.annotationsEnabled).map(option => <option key={option.name} value={option.name}>{option.shortTitle}</option>)}
+              </select>
+            </label>)}
+          </div>
+        </details>}
+      </div>}
     </div>
   );
 };

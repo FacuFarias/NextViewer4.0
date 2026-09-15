@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ClinicalViewportState, DicomInstance, DicomSeries, ViewerLayoutMode, ViewerState } from '../types/dicom';
 import type { HangingAssignment, HangingLayout } from '../types/hangingProtocol';
 import type { ClinicalMouseTool, ConfigurableMouseButton, MouseToolBindings } from '../types/tools';
-import { CLINICAL_MOUSE_TOOLS, DEFAULT_MOUSE_TOOL_BINDINGS } from '../types/tools';
+import {
+  CLINICAL_MOUSE_TOOLS, DEFAULT_MOUSE_TOOL_BINDINGS, DEFAULT_SHIFT_MOUSE_TOOL_BINDINGS,
+} from '../types/tools';
 import { getDicomRequestHeaders } from '../services/auth';
 import {
   applyMouseToolBindings, clearClinicalMeasurements, configureDicomLoader, cornerstoneTools, createRenderingEngine,
@@ -19,21 +21,28 @@ const STACK_NEW_IMAGE = 'CORNERSTONE_STACK_NEW_IMAGE';
 const RENDERING_ENGINE_ID = 'clinicalRenderingEngine';
 const TOOL_GROUP_ID = 'clinicalToolGroup';
 const MOUSE_BINDINGS_STORAGE_KEY = 'nextviewer.mouseToolBindings';
+const SHIFT_MOUSE_BINDINGS_STORAGE_KEY = 'nextviewer.shiftMouseToolBindings';
 const defaultWindowLevel = { windowWidth: 4096, windowCenter: 2048 };
 
-function loadMouseToolBindings(): MouseToolBindings {
+function loadMouseToolBindings(
+  storageKey = MOUSE_BINDINGS_STORAGE_KEY,
+  defaults = DEFAULT_MOUSE_TOOL_BINDINGS,
+): MouseToolBindings {
   try {
-    const stored = JSON.parse(window.localStorage.getItem(MOUSE_BINDINGS_STORAGE_KEY) || '{}') as Partial<MouseToolBindings>;
+    const stored = JSON.parse(window.localStorage.getItem(storageKey) || '{}') as Partial<MouseToolBindings>;
     const availableTools = new Set<string>(CLINICAL_MOUSE_TOOLS);
-    const isPreviousDefault = stored.primary === 'WindowLevel' && stored.auxiliary === 'Zoom' && stored.secondary === 'Pan';
-    if (isPreviousDefault) return DEFAULT_MOUSE_TOOL_BINDINGS;
+    const isPreviousDefault = storageKey === MOUSE_BINDINGS_STORAGE_KEY && (
+      (stored.primary === 'WindowLevel' && stored.auxiliary === 'Zoom' && stored.secondary === 'Pan') ||
+      (stored.primary === 'WindowLevel' && stored.auxiliary === 'Pan' && stored.secondary === 'WindowLevel')
+    );
+    if (isPreviousDefault) return defaults;
     return {
-      primary: availableTools.has(stored.primary || '') ? stored.primary! : DEFAULT_MOUSE_TOOL_BINDINGS.primary,
-      auxiliary: availableTools.has(stored.auxiliary || '') ? stored.auxiliary! : DEFAULT_MOUSE_TOOL_BINDINGS.auxiliary,
-      secondary: availableTools.has(stored.secondary || '') ? stored.secondary! : DEFAULT_MOUSE_TOOL_BINDINGS.secondary,
+      primary: availableTools.has(stored.primary || '') ? stored.primary! : defaults.primary,
+      auxiliary: availableTools.has(stored.auxiliary || '') ? stored.auxiliary! : defaults.auxiliary,
+      secondary: availableTools.has(stored.secondary || '') ? stored.secondary! : defaults.secondary,
     };
   } catch {
-    return DEFAULT_MOUSE_TOOL_BINDINGS;
+    return defaults;
   }
 }
 
@@ -64,6 +73,10 @@ interface LoadedSeries { series: DicomSeries; instances: DicomInstance[]; imageI
 export function useDicomViewer(studyInstanceUID: string) {
   const [state, setState] = useState<ViewerState>(initialState);
   const [mouseToolBindings, setMouseToolBindings] = useState<MouseToolBindings>(loadMouseToolBindings);
+  const [shiftMouseToolBindings, setShiftMouseToolBindings] = useState<MouseToolBindings>(
+    () => loadMouseToolBindings(SHIFT_MOUSE_BINDINGS_STORAGE_KEY, DEFAULT_SHIFT_MOUSE_TOOL_BINDINGS)
+  );
+  const [referenceLinesEnabled, setReferenceLinesEnabledState] = useState(false);
   const [cornerstoneReady, setCornerstoneReady] = useState(false);
   const [layoutVersion, setLayoutVersion] = useState(0);
   const renderingEngineRef = useRef<any>(null);
@@ -75,6 +88,28 @@ export function useDicomViewer(studyInstanceUID: string) {
   const resizeFrameRef = useRef<number | null>(null);
   const layoutRequestRef = useRef(0);
   const mouseToolBindingsRef = useRef(mouseToolBindings);
+  const shiftMouseToolBindingsRef = useRef(shiftMouseToolBindings);
+  const referenceLinesEnabledRef = useRef(false);
+  const referenceLinesSourceViewportRef = useRef<string | null>(null);
+
+  const refreshReferenceLines = useCallback((sourceViewportId?: string) => {
+    const toolGroup = toolGroupRef.current;
+    const sourceId = sourceViewportId || referenceLinesSourceViewportRef.current;
+    if (!toolGroup || !sourceId || !referenceLinesEnabledRef.current) return;
+    toolGroup.setToolConfiguration(cornerstoneTools.ReferenceLinesTool.toolName, {
+      sourceViewportId: sourceId,
+      enforceSameFrameOfReference: true,
+      showFullDimension: true,
+    });
+  }, []);
+
+  const clearViewerAnnotations = useCallback(() => {
+    const referenceLinesTool = toolGroupRef.current?.getToolInstance?.(cornerstoneTools.ReferenceLinesTool.toolName);
+    const annotationUID = referenceLinesTool?.editData?.annotation?.annotationUID;
+    if (annotationUID) cornerstoneTools.annotation.state.removeAnnotation(annotationUID);
+    if (referenceLinesTool) referenceLinesTool.editData = null;
+    clearClinicalMeasurements();
+  }, []);
 
   const scheduleRenderingEngineResize = useCallback(() => {
     if (resizeFrameRef.current !== null) window.cancelAnimationFrame(resizeFrameRef.current);
@@ -116,7 +151,10 @@ export function useDicomViewer(studyInstanceUID: string) {
         : { ...previous, viewports };
     });
     preloadAdjacentImages(viewportId, imageIndex);
-  }, [preloadAdjacentImages]);
+    if (referenceLinesEnabledRef.current && referenceLinesSourceViewportRef.current === viewportId) {
+      refreshReferenceLines(viewportId);
+    }
+  }, [preloadAdjacentImages, refreshReferenceLines]);
 
   useEffect(() => {
     let disposed = false;
@@ -138,12 +176,12 @@ export function useDicomViewer(studyInstanceUID: string) {
       if (resizeFrameRef.current !== null) window.cancelAnimationFrame(resizeFrameRef.current);
       resizeObserverRef.current?.disconnect();
       for (const element of viewportElements.values()) element.removeEventListener(STACK_NEW_IMAGE, handleStackNewImage);
-      clearClinicalMeasurements();
+      clearViewerAnnotations();
       cornerstoneTools.ToolGroupManager.destroyToolGroup(TOOL_GROUP_ID);
       renderingEngineRef.current?.destroy();
       purgeMemoryCache();
     };
-  }, [handleStackNewImage]);
+  }, [clearViewerAnnotations, handleStackNewImage]);
 
   useEffect(() => {
     if (!cornerstoneReady) return;
@@ -237,7 +275,24 @@ export function useDicomViewer(studyInstanceUID: string) {
       const toolGroup = createToolGroup(TOOL_GROUP_ID);
       if (!toolGroup) throw new Error('No se pudo crear el grupo de herramientas clínicas.');
       toolGroupRef.current = toolGroup;
-      setupToolGroup(toolGroup, viewportIds, RENDERING_ENGINE_ID, mouseToolBindingsRef.current);
+      setupToolGroup(
+        toolGroup,
+        viewportIds,
+        RENDERING_ENGINE_ID,
+        mouseToolBindingsRef.current,
+        shiftMouseToolBindingsRef.current,
+      );
+      if (referenceLinesEnabledRef.current) {
+        const sourceViewportId = referenceLinesSourceViewportRef.current || viewportIds[0];
+        if (sourceViewportId) {
+          toolGroup.setToolConfiguration(cornerstoneTools.ReferenceLinesTool.toolName, {
+            sourceViewportId,
+            enforceSameFrameOfReference: true,
+            showFullDimension: true,
+          });
+          toolGroup.setToolEnabled(cornerstoneTools.ReferenceLinesTool.toolName);
+        }
+      }
       resizeObserverRef.current = new ResizeObserver(scheduleRenderingEngineResize);
       viewportIds.forEach(id => resizeObserverRef.current?.observe(viewportElementsRef.current.get(id)!));
       configureDicomLoader(await getDicomRequestHeaders('application/dicom'));
@@ -254,6 +309,7 @@ export function useDicomViewer(studyInstanceUID: string) {
         isLoaded: state.viewports.some((viewport, index) => Boolean(viewport.series) && results[index].status === 'fulfilled'),
         error: failure ? (failure.reason instanceof Error ? failure.reason.message : 'No se pudo cargar una serie del protocolo.') : null,
       }));
+      if (referenceLinesEnabledRef.current) refreshReferenceLines(referenceLinesSourceViewportRef.current || state.viewports[0]?.id);
     };
     void initializeLayout().catch(error => {
       if (!disposed) setState(previous => ({ ...previous, isLoading: false, error: error instanceof Error ? error.message : 'No se pudo aplicar el protocolo.' }));
@@ -264,7 +320,7 @@ export function useDicomViewer(studyInstanceUID: string) {
   }, [cornerstoneReady, layoutVersion, scheduleRenderingEngineResize]);
 
   const applyProtocolLayout = useCallback((layout: HangingLayout, assignments: HangingAssignment[]) => {
-    clearClinicalMeasurements();
+    clearViewerAnnotations();
     for (const timer of preloadTimersRef.current.values()) window.clearTimeout(timer);
     preloadTimersRef.current.clear();
     purgeMemoryCache();
@@ -281,10 +337,10 @@ export function useDicomViewer(studyInstanceUID: string) {
       isLoading: true, isLoaded: false, error: null,
     }));
     setLayoutVersion(previous => previous + 1);
-  }, []);
+  }, [clearViewerAnnotations]);
 
   const loadSeries = useCallback(async (studyUID: string, series: DicomSeries, viewportId = state.activeViewportId) => {
-    clearClinicalMeasurements();
+    clearViewerAnnotations();
     setState(previous => ({ ...previous, isLoading: true, error: null }));
     try {
       await loadIntoViewport(viewportId, studyUID, series);
@@ -292,12 +348,12 @@ export function useDicomViewer(studyInstanceUID: string) {
     } catch (error) {
       setState(previous => ({ ...previous, isLoading: false, error: error instanceof Error ? error.message : 'No se pudo cargar la serie.' }));
     }
-  }, [loadIntoViewport, state.activeViewportId]);
+  }, [clearViewerAnnotations, loadIntoViewport, state.activeViewportId]);
 
   useEffect(() => {
     let cancelled = false;
     setState(previous => ({ ...previous, isLoading: true, isLoaded: false, error: null }));
-    clearClinicalMeasurements(); purgeMemoryCache();
+    clearViewerAnnotations(); purgeMemoryCache();
     void Promise.all([dicomWebService.getStudyByUID(studyInstanceUID), dicomWebService.getStudySeries(studyInstanceUID)])
       .then(([study, allSeries]) => {
         if (cancelled) return;
@@ -310,7 +366,7 @@ export function useDicomViewer(studyInstanceUID: string) {
         if (!cancelled) setState(previous => ({ ...previous, isLoading: false, error: error instanceof Error ? error.message : 'No se pudo cargar el estudio.' }));
       });
     return () => { cancelled = true; };
-  }, [studyInstanceUID]);
+  }, [clearViewerAnnotations, studyInstanceUID]);
 
   const selectViewport = useCallback((viewportId: string) => {
     setState(previous => {
@@ -318,7 +374,9 @@ export function useDicomViewer(studyInstanceUID: string) {
       return selected ? { ...previous, activeViewportId: viewportId, currentSeries: selected.series,
         currentInstance: selected.instance, imageIndex: selected.imageIndex, windowLevel: selected.windowLevel } : previous;
     });
-  }, []);
+    referenceLinesSourceViewportRef.current = viewportId;
+    refreshReferenceLines(viewportId);
+  }, [refreshReferenceLines]);
 
   const activeViewport = useMemo(() => state.viewports.find(viewport => viewport.id === state.activeViewportId), [state.activeViewportId, state.viewports]);
 
@@ -351,6 +409,26 @@ export function useDicomViewer(studyInstanceUID: string) {
 
   const undoLastAnnotation = useCallback(() => undoClinicalAction(), []);
 
+  const setReferenceLinesEnabled = useCallback((enabled: boolean, sourceViewportId = state.activeViewportId) => {
+    referenceLinesEnabledRef.current = enabled;
+    referenceLinesSourceViewportRef.current = sourceViewportId;
+    setReferenceLinesEnabledState(enabled);
+
+    const toolGroup = toolGroupRef.current;
+    if (!toolGroup) return;
+    if (!enabled) {
+      toolGroup.setToolDisabled(cornerstoneTools.ReferenceLinesTool.toolName);
+      return;
+    }
+
+    toolGroup.setToolConfiguration(cornerstoneTools.ReferenceLinesTool.toolName, {
+      sourceViewportId,
+      enforceSameFrameOfReference: true,
+      showFullDimension: true,
+    });
+    toolGroup.setToolEnabled(cornerstoneTools.ReferenceLinesTool.toolName);
+  }, [state.activeViewportId]);
+
   const setMouseToolBinding = useCallback((button: ConfigurableMouseButton, toolName: ClinicalMouseTool) => {
     const nextBindings = { ...mouseToolBindingsRef.current, [button]: toolName };
     mouseToolBindingsRef.current = nextBindings;
@@ -360,7 +438,23 @@ export function useDicomViewer(studyInstanceUID: string) {
     } catch {
       // The current browser may disallow persistent storage; bindings still work for this viewer session.
     }
-    if (toolGroupRef.current) applyMouseToolBindings(toolGroupRef.current, nextBindings);
+    if (toolGroupRef.current) {
+      applyMouseToolBindings(toolGroupRef.current, nextBindings, shiftMouseToolBindingsRef.current);
+    }
+  }, []);
+
+  const setShiftMouseToolBinding = useCallback((button: ConfigurableMouseButton, toolName: ClinicalMouseTool) => {
+    const nextBindings = { ...shiftMouseToolBindingsRef.current, [button]: toolName };
+    shiftMouseToolBindingsRef.current = nextBindings;
+    setShiftMouseToolBindings(nextBindings);
+    try {
+      window.localStorage.setItem(SHIFT_MOUSE_BINDINGS_STORAGE_KEY, JSON.stringify(nextBindings));
+    } catch {
+      // The current browser may disallow persistent storage; bindings still work for this viewer session.
+    }
+    if (toolGroupRef.current) {
+      applyMouseToolBindings(toolGroupRef.current, mouseToolBindingsRef.current, nextBindings);
+    }
   }, []);
 
   const setImageIndex = useCallback((requestedIndex: number, viewportId = state.activeViewportId) => {
@@ -388,5 +482,6 @@ export function useDicomViewer(studyInstanceUID: string) {
 
   return { state, registerViewportElement, applyProtocolLayout, loadSeries, selectViewport,
     setWindowLevel, resetView, invertColors, undoLastAnnotation, mouseToolBindings,
-    setMouseToolBinding, setImageIndex };
+    setMouseToolBinding, shiftMouseToolBindings, setShiftMouseToolBinding, setImageIndex,
+    referenceLinesEnabled, setReferenceLinesEnabled };
 }

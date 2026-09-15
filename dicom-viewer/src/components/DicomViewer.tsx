@@ -17,7 +17,7 @@ import HangingProtocolsPanel from './HangingProtocolsPanel';
 import { IconMPR } from './Icons';
 import MPRView from './MPRView';
 import ResizeHandle from './ResizeHandle';
-import SeriesPanel, { PatientInfo } from './SeriesPanel';
+import SeriesPanel, { PatientInfo, SERIES_DRAG_MIME } from './SeriesPanel';
 import Toolbar, { AnnotationToolbar } from './Toolbar';
 
 const MIN_SIDEBAR_WIDTH = 180;
@@ -42,7 +42,8 @@ export default function DicomViewer({ studyInstanceUID, shareAccess }: DicomView
   const {
     state, registerViewportElement, applyProtocolLayout, loadSeries, selectViewport,
     setWindowLevel, resetView, invertColors, mouseToolBindings, setMouseToolBinding,
-    setImageIndex, undoLastAnnotation,
+    shiftMouseToolBindings, setShiftMouseToolBinding,
+    setImageIndex, undoLastAnnotation, referenceLinesEnabled, setReferenceLinesEnabled,
   } = useDicomViewer(studyInstanceUID);
   const [thumbnails, setThumbnails] = useState<Record<string, string>>({});
   const [priorStudies, setPriorStudies] = useState<DicomStudy[]>([]);
@@ -57,6 +58,8 @@ export default function DicomViewer({ studyInstanceUID, shareAccess }: DicomView
   const [protocolsReady, setProtocolsReady] = useState(false);
   const [activeProtocol, setActiveProtocol] = useState<HangingProtocol | null>(null);
   const [layoutHistory, setLayoutHistory] = useState<LayoutSnapshot[]>([]);
+  const [dragOverViewportId, setDragOverViewportId] = useState<string | null>(null);
+  const [showOverlays, setShowOverlays] = useState(true);
   const [horizontalViewportRatios, setHorizontalViewportRatios] = useState<number[]>(() => defaultHorizontalViewportRatios('1x1'));
   const [isMobileViewport, setIsMobileViewport] = useState(() => window.matchMedia(MOBILE_VIEWER_QUERY).matches);
   const appliedStudyRef = useRef('');
@@ -80,7 +83,29 @@ export default function DicomViewer({ studyInstanceUID, shareAccess }: DicomView
   const mprActive = state.layoutMode === 'mpr';
   const mprAvailable = Boolean(mprActive && mprCapable);
   const showMprToggle = Boolean(config.mprEnabled && activeSeries && (mprCapable || mprActive));
+  const referenceLineViewports = useMemo(
+    () => state.viewports.filter(viewport => viewport.isLoaded && viewport.instance),
+    [state.viewports]
+  );
+  const referenceLinesAvailable = Boolean(
+    !mprActive && resolveViewerModality(activeSeries?.modality, state.currentStudy?.modality) === 'mr' &&
+    referenceLineViewports.length > 1
+  );
   const isHorizontalResizableLayout = !isMobileViewport && (state.layoutMode === '1x2' || state.layoutMode === '1x3');
+
+  const preferredReferenceViewportId = useMemo(() => {
+    const axialViewport = referenceLineViewports.find(viewport => {
+      const orientation = viewport.instance?.imageOrientationPatient;
+      if (!orientation || orientation.length !== 6) return false;
+      const normal = [
+        orientation[1] * orientation[5] - orientation[2] * orientation[4],
+        orientation[2] * orientation[3] - orientation[0] * orientation[5],
+        orientation[0] * orientation[4] - orientation[1] * orientation[3],
+      ];
+      return Math.abs(normal[2]) > 0.75;
+    });
+    return axialViewport?.id || activeViewport?.id;
+  }, [activeViewport?.id, referenceLineViewports]);
 
   useEffect(() => {
     setHorizontalViewportRatios(defaultHorizontalViewportRatios(state.layoutMode));
@@ -262,6 +287,42 @@ export default function DicomViewer({ studyInstanceUID, shareAccess }: DicomView
     if (!state.currentStudy) return;
     void loadSeries(series.studyInstanceUID || state.currentStudy.studyInstanceUID, series, state.activeViewportId);
   }, [loadSeries, state.activeViewportId, state.currentStudy]);
+  const changeActiveSeries = useCallback((direction: 1 | -1) => {
+    if (!activeStudy || !activeSeries) return;
+    const currentIndex = activeStudy.series.findIndex(series => series.seriesInstanceUID === activeSeries.seriesInstanceUID);
+    if (currentIndex < 0) return;
+    const nextIndex = currentIndex + direction;
+    if (nextIndex < 0 || nextIndex >= activeStudy.series.length) return;
+    const nextSeries = activeStudy.series[nextIndex];
+    void loadSeries(activeStudy.studyInstanceUID, nextSeries, state.activeViewportId);
+  }, [activeSeries, activeStudy, loadSeries, state.activeViewportId]);
+  const handleViewportDragOver = useCallback((event: React.DragEvent<HTMLElement>, viewportId: string) => {
+    if (!Array.from(event.dataTransfer.types).includes(SERIES_DRAG_MIME)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+    setDragOverViewportId(viewportId);
+  }, []);
+  const handleViewportDrop = useCallback((event: React.DragEvent<HTMLElement>, viewportId: string) => {
+    event.preventDefault();
+    setDragOverViewportId(null);
+    try {
+      const payload = JSON.parse(event.dataTransfer.getData(SERIES_DRAG_MIME)) as {
+        studyInstanceUID?: string;
+        seriesInstanceUID?: string;
+      };
+      if (!payload.studyInstanceUID || !payload.seriesInstanceUID) return;
+      const study = availableStudies.find(item => item.studyInstanceUID === payload.studyInstanceUID);
+      const series = study?.series.find(item => item.seriesInstanceUID === payload.seriesInstanceUID);
+      if (study && series) void loadSeries(study.studyInstanceUID, series, viewportId);
+    } catch {
+      // Ignore drops that do not come from a NextViewer series card.
+    }
+  }, [availableStudies, loadSeries]);
+  const handleViewportDragLeave = useCallback((event: React.DragEvent<HTMLElement>, viewportId: string) => {
+    const relatedTarget = event.relatedTarget;
+    if (relatedTarget instanceof Node && event.currentTarget.contains(relatedTarget)) return;
+    setDragOverViewportId(previous => previous === viewportId ? null : previous);
+  }, []);
   const toggleMpr = useCallback(() => {
     if (!activeSeries || !config.mprEnabled || (!mprActive && !mprCapable)) return;
     recordLayoutSnapshot();
@@ -274,6 +335,10 @@ export default function DicomViewer({ studyInstanceUID, shareAccess }: DicomView
   const handleToolChange = useCallback((toolName: ClinicalMouseTool) => {
     setMouseToolBinding('primary', toolName);
   }, [setMouseToolBinding]);
+  const handleReferenceLinesToggle = useCallback(() => {
+    if (!referenceLinesAvailable) return;
+    setReferenceLinesEnabled(!referenceLinesEnabled, preferredReferenceViewportId);
+  }, [preferredReferenceViewportId, referenceLinesAvailable, referenceLinesEnabled, setReferenceLinesEnabled]);
   const resizeLeft = useCallback((delta: number) => setLeftSidebarWidth(previous => Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, previous + delta))), []);
   const resizeRight = useCallback((delta: number) => setRightSidebarWidth(previous => Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, previous + delta))), []);
   const finishResize = useCallback(() => window.dispatchEvent(new Event('resize')), []);
@@ -333,6 +398,30 @@ export default function DicomViewer({ studyInstanceUID, shareAccess }: DicomView
     return () => window.removeEventListener('keydown', undoOnShortcut, true);
   }, [handleUndo]);
 
+  useEffect(() => {
+    const handleViewerShortcut = (event: KeyboardEvent) => {
+      const target = event.target;
+      const isEditing = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement || (target instanceof HTMLElement && target.isContentEditable);
+      if (isEditing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+
+      const key = event.key.toLowerCase();
+      if (key === 'n') {
+        event.preventDefault();
+        changeActiveSeries(1);
+      } else if (key === 'e') {
+        event.preventDefault();
+        changeActiveSeries(-1);
+      } else if (key === 'o') {
+        event.preventDefault();
+        setShowOverlays(previous => !previous);
+      }
+    };
+
+    window.addEventListener('keydown', handleViewerShortcut);
+    return () => window.removeEventListener('keydown', handleViewerShortcut);
+  }, [changeActiveSeries]);
+
   const renderStackViewport = (viewport: typeof activeViewport, flexRatio?: number) => {
     if (!viewport) return null;
     const modality = resolveViewerModality(viewport.series?.modality, state.currentStudy?.modality, viewport.instance?.modality);
@@ -341,18 +430,30 @@ export default function DicomViewer({ studyInstanceUID, shareAccess }: DicomView
     return (
       <section
         key={viewport.id}
-        className={`clinical-stack-panel viewer-modality-${modality} ${state.activeViewportId === viewport.id ? 'active' : ''}`}
+        className={`clinical-stack-panel viewer-modality-${modality} ${state.activeViewportId === viewport.id ? 'active' : ''} ${dragOverViewportId === viewport.id ? 'drag-over' : ''}`}
         style={flexRatio === undefined ? undefined : { flex: `${flexRatio} 1 0%` }}
         onMouseDown={() => selectViewport(viewport.id)}
         onContextMenu={event => event.preventDefault()}
+        onDragOver={event => handleViewportDragOver(event, viewport.id)}
+        onDragLeave={event => handleViewportDragLeave(event, viewport.id)}
+        onDrop={event => handleViewportDrop(event, viewport.id)}
       >
         <div className="viewport-area">
           <div className="viewport-container">
-            <div ref={element => registerViewportElement(viewport.id, element)} id={viewport.id} className="dicom-viewport">
+            <div
+              ref={element => registerViewportElement(viewport.id, element)}
+              id={viewport.id}
+              className="dicom-viewport"
+              onContextMenu={event => {
+                event.preventDefault();
+                event.stopPropagation();
+              }}
+            >
               {!viewport.series && !state.isLoading && <div className="placeholder"><p>Sin serie coincidente</p></div>}
             </div>
+            {dragOverViewportId === viewport.id && <div className="viewport-drop-hint">Soltar serie aquí</div>}
             {viewport.label && <span className="clinical-viewport-label">{viewport.label}</span>}
-            {viewport.isLoaded && viewportStudy && (
+            {showOverlays && viewport.isLoaded && viewportStudy && (
               <DicomOverlay study={viewportStudy} instance={viewport.instance} imageIndex={viewport.imageIndex} totalImages={viewport.series?.instances.length || 0} windowLevel={viewport.windowLevel} />
             )}
           </div>
@@ -394,9 +495,9 @@ export default function DicomViewer({ studyInstanceUID, shareAccess }: DicomView
           <AnnotationToolbar
             activeTool={mouseToolBindings.primary}
             onToolChange={handleToolChange}
-            mouseToolBindings={mouseToolBindings}
-            onMouseToolChange={setMouseToolBinding}
             onUndo={handleUndo}
+            onReferenceLinesToggle={referenceLinesAvailable ? handleReferenceLinesToggle : undefined}
+            referenceLinesEnabled={referenceLinesEnabled}
             onResetView={resetView}
             onInvertColors={invertColors}
             layout={state.layoutMode}
@@ -443,6 +544,7 @@ export default function DicomViewer({ studyInstanceUID, shareAccess }: DicomView
             priorStudies={priorStudies}
             currentSeries={activeViewport?.series || null}
             onSeriesSelect={handleSeriesSelect}
+            onSeriesDragEnd={() => setDragOverViewportId(null)}
             thumbnails={thumbnails}
             isLoadingPriors={isLoadingPriors}
             priorStudiesError={priorStudiesError}
@@ -498,7 +600,15 @@ export default function DicomViewer({ studyInstanceUID, shareAccess }: DicomView
             {state.currentStudy && <section className="mobile-secondary-content"><h4>Datos del paciente</h4><PatientInfo study={state.currentStudy} className="mobile-patient-info" includeClinicalDetails /></section>}
             {activeViewport?.instance && <section className="mobile-secondary-content mobile-image-details"><h4>Imagen activa</h4><div className="mobile-technical-info"><div><span>Tamaño:</span><strong>{activeViewport.instance.rows}×{activeViewport.instance.columns}</strong></div><div><span>Bits:</span><strong>{activeViewport.instance.bitsAllocated}</strong></div>{activeViewport.instance.photometricInterpretation && <div><span>Fotometría:</span><strong>{activeViewport.instance.photometricInterpretation}</strong></div>}</div></section>}
             {!shareAccess && <section className="hanging-tools-section"><h4>Presentación</h4><button type="button" className="hanging-open-btn" onClick={() => { setIsToolsSidebarOpen(false); setIsHangingPanelOpen(true); }}>Hanging protocols<small>{activeProtocol ? `${activeProtocol.modality} · ${activeProtocol.layout.toUpperCase()}` : `Manual · ${state.layoutMode.toUpperCase()}`}</small></button></section>}
-            {state.isLoaded && <><Toolbar windowLevel={state.windowLevel} onWindowLevelChange={setWindowLevel} modality={activeViewport?.series?.modality} />{config.downloadEnabled && activeStudy && <DownloadButton study={activeStudy} currentSeries={activeViewport?.series || null} />}</>}
+            {state.isLoaded && <><Toolbar
+              windowLevel={state.windowLevel}
+              onWindowLevelChange={setWindowLevel}
+              modality={activeViewport?.series?.modality}
+              mouseToolBindings={mouseToolBindings}
+              onMouseToolChange={setMouseToolBinding}
+              shiftMouseToolBindings={shiftMouseToolBindings}
+              onShiftMouseToolChange={setShiftMouseToolBinding}
+            />{config.downloadEnabled && activeStudy && <DownloadButton study={activeStudy} currentSeries={activeViewport?.series || null} />}</>}
           </aside>
       </div>
 
@@ -522,6 +632,11 @@ export default function DicomViewer({ studyInstanceUID, shareAccess }: DicomView
             handleUndo();
             setIsMobileToolsOpen(false);
           }}
+          onReferenceLinesToggle={referenceLinesAvailable ? () => {
+            handleReferenceLinesToggle();
+            setIsMobileToolsOpen(false);
+          } : undefined}
+          referenceLinesEnabled={referenceLinesEnabled}
           layout={state.layoutMode}
           onLayoutChange={layout => {
             handleLayoutChange(layout);

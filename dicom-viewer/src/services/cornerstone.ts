@@ -2,7 +2,9 @@ import { cache, Enums, imageLoader, init as coreInit, RenderingEngine, utilities
 import dicomImageLoader from '@cornerstonejs/dicom-image-loader';
 import * as cornerstoneTools from '@cornerstonejs/tools';
 import type { MouseToolBindings } from '../types/tools';
-import { DEFAULT_MOUSE_TOOL_BINDINGS } from '../types/tools';
+import {
+  CLINICAL_MOUSE_TOOLS, DEFAULT_MOUSE_TOOL_BINDINGS, DEFAULT_SHIFT_MOUSE_TOOL_BINDINGS,
+} from '../types/tools';
 import { registerUsLosslessImageLoader } from './usLosslessImageLoader';
 
 let initialized = false;
@@ -13,6 +15,7 @@ const CLINICAL_TOOL_CLASSES = [
   cornerstoneTools.PanTool,
   cornerstoneTools.ZoomTool,
   cornerstoneTools.StackScrollTool,
+  cornerstoneTools.ReferenceLinesTool,
   cornerstoneTools.MagnifyTool,
   cornerstoneTools.LengthTool,
   cornerstoneTools.ArrowAnnotateTool,
@@ -100,17 +103,35 @@ export function createToolGroup(id: string): any {
   return cornerstoneTools.ToolGroupManager.createToolGroup(id);
 }
 
-export function applyMouseToolBindings(toolGroup: any, bindings: MouseToolBindings): void {
+export function applyMouseToolBindings(
+  toolGroup: any,
+  bindings: MouseToolBindings,
+  shiftBindings: MouseToolBindings = DEFAULT_SHIFT_MOUSE_TOOL_BINDINGS,
+): void {
   const mouseButtons = cornerstoneTools.Enums.MouseBindings;
+  const shiftKey = cornerstoneTools.Enums.KeyboardBindings.Shift;
   const buttonBindings = {
     primary: mouseButtons.Primary,
     auxiliary: mouseButtons.Auxiliary,
     secondary: mouseButtons.Secondary,
   };
-  const bindingsByTool = new Map<string, Array<{ mouseButton?: number; numTouchPoints?: number }>>();
+
+  // ToolGroup.setToolPassive preserves non-primary bindings by default. When a
+  // mouse button is reassigned at runtime, clear every clinical mouse binding
+  // first so the previous tool cannot continue competing for that button.
+  for (const toolName of CLINICAL_MOUSE_TOOLS) {
+    toolGroup.setToolPassive(toolName, { removeAllBindings: true });
+  }
+
+  const bindingsByTool = new Map<string, Array<{ mouseButton?: number; modifierKey?: number; numTouchPoints?: number }>>();
   for (const [button, toolName] of Object.entries(bindings) as Array<[keyof MouseToolBindings, string]>) {
     const toolBindings = bindingsByTool.get(toolName) || [];
     toolBindings.push({ mouseButton: buttonBindings[button] });
+    bindingsByTool.set(toolName, toolBindings);
+  }
+  for (const [button, toolName] of Object.entries(shiftBindings) as Array<[keyof MouseToolBindings, string]>) {
+    const toolBindings = bindingsByTool.get(toolName) || [];
+    toolBindings.push({ mouseButton: buttonBindings[button], modifierKey: shiftKey });
     bindingsByTool.set(toolName, toolBindings);
   }
 
@@ -133,13 +154,14 @@ export function setupToolGroup(
   viewportIds: string | string[],
   renderingEngineId?: string,
   mouseToolBindings: MouseToolBindings = DEFAULT_MOUSE_TOOL_BINDINGS,
+  shiftMouseToolBindings: MouseToolBindings = DEFAULT_SHIFT_MOUSE_TOOL_BINDINGS,
 ): void {
   for (const tool of CLINICAL_TOOL_CLASSES) toolGroup.addTool(tool.toolName);
   for (const viewportId of Array.isArray(viewportIds) ? viewportIds : [viewportIds]) {
     if (renderingEngineId) toolGroup.addViewport(viewportId, renderingEngineId);
     else toolGroup.addViewport(viewportId);
   }
-  applyMouseToolBindings(toolGroup, mouseToolBindings);
+  applyMouseToolBindings(toolGroup, mouseToolBindings, shiftMouseToolBindings);
 }
 
 export { cache, cornerstoneTools, Enums };

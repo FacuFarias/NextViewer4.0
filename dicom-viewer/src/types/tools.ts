@@ -29,3 +29,9 @@ export const DEFAULT_MOUSE_TOOL_BINDINGS: MouseToolBindings = {
   auxiliary: 'Pan',
   secondary: 'Zoom',
 };
+
+export const DEFAULT_SHIFT_MOUSE_TOOL_BINDINGS: MouseToolBindings = {
+  primary: 'Length',
+  auxiliary: 'RectangleROI',
+  secondary: 'CircleROI',
+};

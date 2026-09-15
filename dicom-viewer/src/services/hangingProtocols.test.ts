@@ -49,9 +49,11 @@ describe('hanging protocol matching', () => {
     expect(selectHangingProtocol(study([series(1, 'MR', 'T1')]), [personal]).id).toBe('system-mr');
   });
 
-  it('keeps CT and MR in the primary native view until MPR is activated', () => {
+  it('uses 1x1 for CT and 1x2 for MR before MPR is activated', () => {
     expect(selectHangingProtocol(study([series(1, 'CT', 'Axial')]), []).layout).toBe('1x1');
-    expect(selectHangingProtocol(study([series(1, 'MR', 'T1')]), []).layout).toBe('1x1');
+    const mrProtocol = selectHangingProtocol(study([series(1, 'MR', 'T1')]), []);
+    expect(mrProtocol.layout).toBe('1x2');
+    expect(mrProtocol.viewportRules).toHaveLength(2);
   });
 
   it('uses first visual modality except PT/CT and NM/CT combinations', () => {

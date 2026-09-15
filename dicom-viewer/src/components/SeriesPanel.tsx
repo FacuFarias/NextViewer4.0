@@ -9,15 +9,18 @@ interface SeriesPanelProps {
   thumbnails: Record<string, string>;
   isLoadingPriors?: boolean;
   priorStudiesError?: string | null;
+  onSeriesDragEnd?: () => void;
 }
+
+export const SERIES_DRAG_MIME = 'application/x-nextviewer-series';
 
 const formatPatientDate = (date: string): string => (
   date?.length === 8 ? `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}` : date
 );
 
-const SeriesItems: React.FC<Pick<SeriesPanelProps, 'currentSeries' | 'onSeriesSelect' | 'thumbnails'> & {
+const SeriesItems: React.FC<Pick<SeriesPanelProps, 'currentSeries' | 'onSeriesSelect' | 'thumbnails' | 'onSeriesDragEnd'> & {
   study: DicomStudy;
-}> = ({ study, currentSeries, onSeriesSelect, thumbnails }) => {
+}> = ({ study, currentSeries, onSeriesSelect, thumbnails, onSeriesDragEnd }) => {
   const getModalityIcon = (modality: string): string => {
     const icons: Record<string, string> = {
       CT: '🖥', MR: '🧲', DX: '📸', US: '📡', MG: '🔬', CR: '📷',
@@ -35,6 +38,20 @@ const SeriesItems: React.FC<Pick<SeriesPanelProps, 'currentSeries' | 'onSeriesSe
           <div
             key={`${study.studyInstanceUID}:${series.seriesInstanceUID}`}
             className={`series-item ${isActive ? 'active' : ''}`}
+            draggable
+            onDragStart={event => {
+              event.dataTransfer.effectAllowed = 'copy';
+              event.dataTransfer.setData(SERIES_DRAG_MIME, JSON.stringify({
+                studyInstanceUID: study.studyInstanceUID,
+                seriesInstanceUID: series.seriesInstanceUID,
+              }));
+              event.dataTransfer.setData('text/plain', `Serie ${series.seriesNumber || index + 1}`);
+              event.currentTarget.classList.add('dragging');
+            }}
+            onDragEnd={event => {
+              event.currentTarget.classList.remove('dragging');
+              onSeriesDragEnd?.();
+            }}
             onClick={() => onSeriesSelect(series)}
             onKeyDown={event => {
               if (event.key === 'Enter' || event.key === ' ') {
@@ -124,6 +141,7 @@ const SeriesPanel: React.FC<SeriesPanelProps> = ({
   thumbnails,
   isLoadingPriors = false,
   priorStudiesError = null,
+  onSeriesDragEnd,
 }) => {
   const [isPatientInfoOpen, setIsPatientInfoOpen] = useState(false);
   const priorStudyUIDs = useMemo(() => priorStudies.map(entry => entry.studyInstanceUID), [priorStudies]);
@@ -181,7 +199,7 @@ const SeriesPanel: React.FC<SeriesPanelProps> = ({
                 <span className="study-expand-chevron" aria-hidden="true">{isCurrentStudyExpanded ? '−' : '+'}</span>
               </span>
             </button>
-            {isCurrentStudyExpanded && <SeriesItems study={study} currentSeries={currentSeries} onSeriesSelect={onSeriesSelect} thumbnails={thumbnails} />}
+            {isCurrentStudyExpanded && <SeriesItems study={study} currentSeries={currentSeries} onSeriesSelect={onSeriesSelect} thumbnails={thumbnails} onSeriesDragEnd={onSeriesDragEnd} />}
           </section>
 
           {(isLoadingPriors || priorStudies.length > 0 || priorStudiesError) && (
@@ -208,7 +226,7 @@ const SeriesPanel: React.FC<SeriesPanelProps> = ({
                   </span>
                   <span className="study-expand-chevron" aria-hidden="true">{isExpanded ? '−' : '+'}</span>
                 </button>
-                {isExpanded && <SeriesItems study={priorStudy} currentSeries={currentSeries} onSeriesSelect={onSeriesSelect} thumbnails={thumbnails} />}
+                {isExpanded && <SeriesItems study={priorStudy} currentSeries={currentSeries} onSeriesSelect={onSeriesSelect} thumbnails={thumbnails} onSeriesDragEnd={onSeriesDragEnd} />}
               </section>
             );
           })}
