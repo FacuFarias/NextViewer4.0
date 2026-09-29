@@ -1,4 +1,4 @@
-import { cache, Enums, imageLoader, init as coreInit, RenderingEngine, utilities } from '@cornerstonejs/core';
+import { cache, Enums, eventTarget, imageLoader, init as coreInit, RenderingEngine, utilities } from '@cornerstonejs/core';
 import dicomImageLoader from '@cornerstonejs/dicom-image-loader';
 import * as cornerstoneTools from '@cornerstonejs/tools';
 import type { MouseToolBindings } from '../types/tools';
@@ -164,4 +164,4 @@ export function setupToolGroup(
   applyMouseToolBindings(toolGroup, mouseToolBindings, shiftMouseToolBindings);
 }
 
-export { cache, cornerstoneTools, Enums };
+export { cache, cornerstoneTools, Enums, eventTarget };

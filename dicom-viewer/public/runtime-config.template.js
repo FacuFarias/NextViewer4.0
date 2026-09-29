@@ -7,5 +7,6 @@ window.__NEXTVIEWER_CONFIG__ = {
   oidcRedirectUri: '${OIDC_REDIRECT_URI}',
   oidcPostLogoutRedirectUri: '${OIDC_POST_LOGOUT_REDIRECT_URI}',
   shareGatewayRoot: '${SHARE_GATEWAY_ROOT}',
-  downloadEnabled: '${DOWNLOAD_ENABLED}' === 'true'
+  downloadEnabled: '${DOWNLOAD_ENABLED}' === 'true',
+  presentationStateShareEnabled: '${PRESENTATION_STATE_SHARE_ENABLED}' === 'true'
 };

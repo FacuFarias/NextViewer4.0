@@ -5,15 +5,18 @@ import type { ClinicalMouseTool, ConfigurableMouseButton, MouseToolBindings } fr
 import {
   CLINICAL_MOUSE_TOOLS, DEFAULT_MOUSE_TOOL_BINDINGS, DEFAULT_SHIFT_MOUSE_TOOL_BINDINGS,
 } from '../types/tools';
-import { getDicomRequestHeaders } from '../services/auth';
+import { getDicomRequestHeaders, isShareAccess } from '../services/auth';
 import {
   applyMouseToolBindings, clearClinicalMeasurements, configureDicomLoader, cornerstoneTools, createRenderingEngine,
-  createToolGroup, Enums, initializeCornerstone, isImageCached, loadImageToCache,
+  createToolGroup, Enums, eventTarget, initializeCornerstone, isImageCached, loadImageToCache,
   purgeMemoryCache, registerTools, setupToolGroup, undoClinicalAction,
 } from '../services/cornerstone';
 import { expandMultiframeInstances, getDicomFrameImageId } from '../services/dicomFrames';
 import { dicomWebService, mergeDefinedDicomMetadata } from '../services/dicomWeb';
 import { getUsLosslessImageId } from '../services/usLosslessImageLoader';
+import { buildPresentationStateDataset, isPresentationStateForInstance, serializePresentationState } from '../services/presentationState';
+import type { PresentationState } from '../types/presentationState';
+import { isPresentationStateShareEnabled } from '../services/runtimeConfig';
 import { isClinicalImageModality, isSupportedVisualInstance, resolveViewerModality } from '../services/viewerModality';
 
 const PRELOAD_RANGE = 6;
@@ -23,6 +26,52 @@ const TOOL_GROUP_ID = 'clinicalToolGroup';
 const MOUSE_BINDINGS_STORAGE_KEY = 'nextviewer.mouseToolBindings';
 const SHIFT_MOUSE_BINDINGS_STORAGE_KEY = 'nextviewer.shiftMouseToolBindings';
 const defaultWindowLevel = { windowWidth: 4096, windowCenter: 2048 };
+const MEASUREMENT_TOOL_NAMES = new Set([
+  'Length', 'ArrowAnnotate', 'CircleROI', 'EllipticalROI', 'Angle', 'Probe',
+  'Bidirectional', 'RectangleROI', 'PlanarFreehandROI',
+]);
+
+const MEASUREMENT_TOOL_LABELS: Record<string, string> = {
+  Length: 'Distancia', ArrowAnnotate: 'Flecha', CircleROI: 'ROI circular',
+  EllipticalROI: 'ROI elíptica', Angle: 'Ángulo', Probe: 'Sonda',
+  Bidirectional: 'Bidireccional', RectangleROI: 'Rectángulo',
+  PlanarFreehandROI: 'ROI a mano alzada',
+};
+
+const MEASUREMENT_TOOL_COLORS: Record<string, string> = {
+  Length: '#42a5f5', ArrowAnnotate: '#ef5350', CircleROI: '#66bb6a',
+  EllipticalROI: '#8bc34a', Angle: '#ffa726', Probe: '#29b6f6',
+  Bidirectional: '#ab47bc', RectangleROI: '#26a69a',
+  PlanarFreehandROI: '#90a4ae',
+};
+
+export interface ViewerMeasurement {
+  annotationUID: string;
+  toolName: string;
+  label: string;
+  value: string;
+  color: string;
+  viewportId?: string;
+  imageIndex: number;
+  selected: boolean;
+}
+
+function getAnnotationToolName(annotation: any): string {
+  return annotation?.toolName || annotation?.metadata?.toolName || annotation?.data?.toolName || '';
+}
+
+function formatMeasurementValue(annotation: any): string {
+  const stats = Object.values(annotation?.data?.cachedStats || {})[0] as Record<string, unknown> | undefined;
+  if (!stats) return 'Sin valor';
+  if (typeof stats.length === 'number') return `${stats.length.toFixed(1)} mm`;
+  if (typeof stats.area === 'number') return `${stats.area.toFixed(1)} mm²`;
+  if (typeof stats.angle === 'number') return `${stats.angle.toFixed(1)}°`;
+  if (typeof stats.width === 'number' && typeof stats.height === 'number') {
+    return `${stats.width.toFixed(1)} × ${stats.height.toFixed(1)} mm`;
+  }
+  if (typeof stats.mean === 'number') return `Media: ${stats.mean.toFixed(1)}`;
+  return 'Sin valor';
+}
 
 function loadMouseToolBindings(
   storageKey = MOUSE_BINDINGS_STORAGE_KEY,
@@ -76,6 +125,9 @@ export function useDicomViewer(studyInstanceUID: string) {
   const [shiftMouseToolBindings, setShiftMouseToolBindings] = useState<MouseToolBindings>(
     () => loadMouseToolBindings(SHIFT_MOUSE_BINDINGS_STORAGE_KEY, DEFAULT_SHIFT_MOUSE_TOOL_BINDINGS)
   );
+  const [measurements, setMeasurements] = useState<ViewerMeasurement[]>([]);
+  const [presentationStates, setPresentationStates] = useState<PresentationState[]>([]);
+  const [activePresentationStateUID, setActivePresentationStateUID] = useState<string | null>(null);
   const [referenceLinesEnabled, setReferenceLinesEnabledState] = useState(false);
   const [cornerstoneReady, setCornerstoneReady] = useState(false);
   const [layoutVersion, setLayoutVersion] = useState(0);
@@ -91,6 +143,134 @@ export function useDicomViewer(studyInstanceUID: string) {
   const shiftMouseToolBindingsRef = useRef(shiftMouseToolBindings);
   const referenceLinesEnabledRef = useRef(false);
   const referenceLinesSourceViewportRef = useRef<string | null>(null);
+  const presentationAnnotationUIDsRef = useRef(new Set<string>());
+
+  const clearPresentationAnnotations = useCallback(() => {
+    presentationAnnotationUIDsRef.current.forEach(annotationUID => {
+      cornerstoneTools.annotation.state.removeAnnotation(annotationUID);
+    });
+    presentationAnnotationUIDsRef.current.clear();
+  }, []);
+
+  const applyPresentationState = useCallback((presentationState: PresentationState | null, viewportId = state.activeViewportId) => {
+    const viewport = renderingEngineRef.current?.getViewport(viewportId);
+    const element = viewportElementsRef.current.get(viewportId);
+    if (!viewport || !element) return;
+    clearPresentationAnnotations();
+    const stack = stacksRef.current.get(viewportId);
+    const currentImageId = viewport.getCurrentImageId?.();
+    const instance = stack?.instances.find((candidate, index) =>
+      (currentImageId ? stack.imageIds[index] === currentImageId : false) &&
+      (!presentationState || isPresentationStateForInstance(presentationState, candidate))
+    );
+    if (!presentationState || !instance) {
+      setActivePresentationStateUID(null);
+      const originalWindow = instance ? chooseWindowLevel(instance) : undefined;
+      viewport.setProperties({ invert: false, ...(originalWindow ? { voiRange: {
+        lower: originalWindow.windowCenter - originalWindow.windowWidth / 2,
+        upper: originalWindow.windowCenter + originalWindow.windowWidth / 2,
+      }} : {}) });
+      if (originalWindow) setState(previous => ({ ...previous, windowLevel: originalWindow,
+        viewports: previous.viewports.map(item => item.id === viewportId ? { ...item, windowLevel: originalWindow } : item),
+      }));
+      viewport.render();
+      return;
+    }
+    if (Number.isFinite(presentationState.windowWidth) && Number.isFinite(presentationState.windowCenter)) {
+      viewport.setProperties({ voiRange: {
+        lower: presentationState.windowCenter - presentationState.windowWidth / 2,
+        upper: presentationState.windowCenter + presentationState.windowWidth / 2,
+      }});
+    }
+    viewport.setProperties({ invert: presentationState.presentationLUTShape === 'INVERSE' });
+    const imageData = viewport.getImageData?.()?.imageData;
+    for (const [index, graphic] of presentationState.graphics.entries()) {
+      const worldPoints = [];
+      for (let pointIndex = 0; pointIndex < graphic.points.length; pointIndex += 2) {
+        const x = graphic.points[pointIndex] - 1;
+        const y = graphic.points[pointIndex + 1] - 1;
+        try { worldPoints.push(imageData?.indexToWorld?.([x, y, 0]) || viewport.canvasToWorld([x, y])); } catch { /* ignore malformed graphic */ }
+      }
+      if (worldPoints.length < 1) continue;
+      const annotationUID = `presentation-${presentationState.sopInstanceUID}-${index}`;
+      try {
+        cornerstoneTools.annotation.state.addAnnotation({
+          annotationUID, highlighted: false, autoGenerated: false, invalidated: false,
+          isLocked: true, isVisible: true,
+          metadata: { toolName: 'PlanarFreehandROI', referencedImageId: viewport.getCurrentImageId?.(),
+            FrameOfReferenceUID: instance.frameOfReferenceUID, viewPlaneNormal: viewport.getCamera?.().viewPlaneNormal },
+          data: { handles: { points: worldPoints }, closed: graphic.type !== 'POINT', cachedStats: {} },
+        }, element);
+        presentationAnnotationUIDsRef.current.add(annotationUID);
+      } catch {
+        // Unsupported graphics remain represented in the DICOM PR and do not break image display.
+      }
+    }
+    setActivePresentationStateUID(presentationState.sopInstanceUID);
+    setState(previous => ({ ...previous, windowLevel: {
+      windowWidth: Number.isFinite(presentationState.windowWidth) ? presentationState.windowWidth! : previous.windowLevel.windowWidth,
+      windowCenter: Number.isFinite(presentationState.windowCenter) ? presentationState.windowCenter! : previous.windowLevel.windowCenter,
+    }, viewports: previous.viewports.map(item => item.id === viewportId ? { ...item, windowLevel: {
+      windowWidth: Number.isFinite(presentationState.windowWidth) ? presentationState.windowWidth! : item.windowLevel.windowWidth,
+      windowCenter: Number.isFinite(presentationState.windowCenter) ? presentationState.windowCenter! : item.windowLevel.windowCenter,
+    }} : item) }));
+    viewport.render();
+  }, [clearPresentationAnnotations, state.activeViewportId]);
+
+  const savePresentationState = useCallback(async (): Promise<PresentationState> => {
+    const active = state.viewports.find(item => item.id === state.activeViewportId);
+    if (!state.currentStudy || !active?.instance) throw new Error('No hay una imagen activa para guardar.');
+    if (!active.instance.sopClassUID || !['MONOCHROME1', 'MONOCHROME2'].includes(active.instance.photometricInterpretation?.toUpperCase())) {
+      throw new Error('El PR GSPS solo está disponible para imágenes monocromas.');
+    }
+    const viewport = renderingEngineRef.current?.getViewport(active.id);
+    if (!viewport) throw new Error('El viewport activo no está disponible.');
+    const annotations = cornerstoneTools.annotation.state.getAllAnnotations().filter((annotation: any) => {
+      const referenced = annotation.metadata?.referencedImageId || annotation.data?.referencedImageId;
+      return !referenced || referenced === viewport.getCurrentImageId?.();
+    });
+    const { dataset, state: created } = buildPresentationStateDataset(
+      state.currentStudy, active.instance, state.windowLevel,
+      Boolean(viewport.getProperties?.().invert), annotations, viewport, active.series?.seriesInstanceUID
+    );
+    await dicomWebService.storePresentationState(state.currentStudy.studyInstanceUID, serializePresentationState(dataset));
+    setPresentationStates(previous => [created, ...previous]);
+    setActivePresentationStateUID(created.sopInstanceUID);
+    return created;
+  }, [state.activeViewportId, state.currentStudy, state.viewports, state.windowLevel]);
+
+  const refreshMeasurements = useCallback(() => {
+    const stacks = Array.from(stacksRef.current.entries());
+    const nextMeasurements = cornerstoneTools.annotation.state
+      .getAllAnnotations()
+      .map((annotation: any): ViewerMeasurement | null => {
+        const toolName = getAnnotationToolName(annotation);
+        if (!annotation?.annotationUID || !MEASUREMENT_TOOL_NAMES.has(toolName)) return null;
+
+        const referencedImageId = annotation.metadata?.referencedImageId || annotation.data?.referencedImageId;
+        const stackEntry = stacks.find(([, stack]) =>
+          typeof referencedImageId === 'string' && stack.imageIds.includes(referencedImageId)
+        );
+        const viewportId = annotation.metadata?.viewportId || stackEntry?.[0];
+        const imageIndex = stackEntry && typeof referencedImageId === 'string'
+          ? stackEntry[1].imageIds.indexOf(referencedImageId)
+          : -1;
+
+        return {
+          annotationUID: annotation.annotationUID,
+          toolName,
+          label: MEASUREMENT_TOOL_LABELS[toolName] || toolName || 'Medición',
+          value: formatMeasurementValue(annotation),
+          color: annotation.data?.color || annotation.metadata?.color || MEASUREMENT_TOOL_COLORS[toolName] || '#90a4ae',
+          viewportId,
+          imageIndex,
+          selected: cornerstoneTools.annotation.selection.isAnnotationSelected(annotation.annotationUID),
+        };
+      })
+      .filter((measurement): measurement is ViewerMeasurement => measurement !== null);
+
+    setMeasurements(nextMeasurements);
+  }, []);
 
   const refreshReferenceLines = useCallback((sourceViewportId?: string) => {
     const toolGroup = toolGroupRef.current;
@@ -109,7 +289,9 @@ export function useDicomViewer(studyInstanceUID: string) {
     if (annotationUID) cornerstoneTools.annotation.state.removeAnnotation(annotationUID);
     if (referenceLinesTool) referenceLinesTool.editData = null;
     clearClinicalMeasurements();
-  }, []);
+    clearPresentationAnnotations();
+    setMeasurements([]);
+  }, [clearPresentationAnnotations]);
 
   const scheduleRenderingEngineResize = useCallback(() => {
     if (resizeFrameRef.current !== null) window.cancelAnimationFrame(resizeFrameRef.current);
@@ -177,11 +359,12 @@ export function useDicomViewer(studyInstanceUID: string) {
       resizeObserverRef.current?.disconnect();
       for (const element of viewportElements.values()) element.removeEventListener(STACK_NEW_IMAGE, handleStackNewImage);
       clearViewerAnnotations();
+      clearPresentationAnnotations();
       cornerstoneTools.ToolGroupManager.destroyToolGroup(TOOL_GROUP_ID);
       renderingEngineRef.current?.destroy();
       purgeMemoryCache();
     };
-  }, [clearViewerAnnotations, handleStackNewImage]);
+  }, [clearPresentationAnnotations, clearViewerAnnotations, handleStackNewImage]);
 
   useEffect(() => {
     if (!cornerstoneReady) return;
@@ -195,6 +378,20 @@ export function useDicomViewer(studyInstanceUID: string) {
       visualViewport?.removeEventListener('resize', scheduleRenderingEngineResize);
     };
   }, [cornerstoneReady, scheduleRenderingEngineResize]);
+
+  useEffect(() => {
+    if (!cornerstoneReady) return undefined;
+    const refresh = () => refreshMeasurements();
+    const events = [
+      cornerstoneTools.Enums.Events.ANNOTATION_COMPLETED,
+      cornerstoneTools.Enums.Events.ANNOTATION_MODIFIED,
+      cornerstoneTools.Enums.Events.ANNOTATION_REMOVED,
+      cornerstoneTools.Enums.Events.ANNOTATION_SELECTION_CHANGE,
+    ];
+    events.forEach(eventName => eventTarget.addEventListener(eventName, refresh));
+    refresh();
+    return () => events.forEach(eventName => eventTarget.removeEventListener(eventName, refresh));
+  }, [cornerstoneReady, refreshMeasurements]);
 
   const fetchSeries = useCallback(async (studyUID: string, series: DicomSeries): Promise<LoadedSeries> => {
     const qidoInstances = await dicomWebService.getSeriesInstances(studyUID, series.seriesInstanceUID);
@@ -353,7 +550,7 @@ export function useDicomViewer(studyInstanceUID: string) {
   useEffect(() => {
     let cancelled = false;
     setState(previous => ({ ...previous, isLoading: true, isLoaded: false, error: null }));
-    clearViewerAnnotations(); purgeMemoryCache();
+    clearViewerAnnotations(); clearPresentationAnnotations(); setPresentationStates([]); setActivePresentationStateUID(null); purgeMemoryCache();
     void Promise.all([dicomWebService.getStudyByUID(studyInstanceUID), dicomWebService.getStudySeries(studyInstanceUID)])
       .then(([study, allSeries]) => {
         if (cancelled) return;
@@ -361,12 +558,15 @@ export function useDicomViewer(studyInstanceUID: string) {
         const series = allSeries.filter(entry => isClinicalImageModality(entry.modality));
         if (!series.length) throw new Error('El estudio no contiene series de imágenes.');
         setState(previous => ({ ...previous, currentStudy: { ...study, series }, isLoading: false }));
+        if (!isShareAccess() || isPresentationStateShareEnabled()) {
+          void dicomWebService.getPresentationStates(studyInstanceUID).then(setPresentationStates).catch(() => setPresentationStates([]));
+        }
       })
       .catch(error => {
         if (!cancelled) setState(previous => ({ ...previous, isLoading: false, error: error instanceof Error ? error.message : 'No se pudo cargar el estudio.' }));
       });
     return () => { cancelled = true; };
-  }, [clearViewerAnnotations, studyInstanceUID]);
+  }, [clearPresentationAnnotations, clearViewerAnnotations, studyInstanceUID]);
 
   const selectViewport = useCallback((viewportId: string) => {
     setState(previous => {
@@ -379,6 +579,13 @@ export function useDicomViewer(studyInstanceUID: string) {
   }, [refreshReferenceLines]);
 
   const activeViewport = useMemo(() => state.viewports.find(viewport => viewport.id === state.activeViewportId), [state.activeViewportId, state.viewports]);
+
+  useEffect(() => {
+    if (!activeViewport?.instance) return;
+    const selected = presentationStates.find(item => isPresentationStateForInstance(item, activeViewport.instance!));
+    applyPresentationState(selected || null, activeViewport.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeViewport?.id, activeViewport?.instance?.sopInstanceUID, activeViewport?.instance?.frameNumber, presentationStates]);
 
   const setWindowLevel = useCallback((windowWidth: number, windowCenter: number) => {
     const viewport = renderingEngineRef.current?.getViewport(state.activeViewportId);
@@ -480,8 +687,68 @@ export function useDicomViewer(studyInstanceUID: string) {
     });
   }, [preloadAdjacentImages, state.activeViewportId]);
 
+  const selectMeasurement = useCallback((measurement: ViewerMeasurement) => {
+    if (measurement.viewportId) selectViewport(measurement.viewportId);
+    if (measurement.imageIndex >= 0 && measurement.viewportId) {
+      setImageIndex(measurement.imageIndex, measurement.viewportId);
+    }
+
+    cornerstoneTools.annotation.selection.setAnnotationSelected(measurement.annotationUID);
+    const viewport = measurement.viewportId
+      ? renderingEngineRef.current?.getViewport(measurement.viewportId)
+      : renderingEngineRef.current?.getViewport(state.activeViewportId);
+    viewport?.render?.();
+    refreshMeasurements();
+  }, [refreshMeasurements, selectViewport, setImageIndex, state.activeViewportId]);
+
+  const removeMeasurement = useCallback((annotationUID: string): boolean => {
+    const annotation = cornerstoneTools.annotation.state.getAnnotation(annotationUID);
+    if (!annotation) return false;
+    cornerstoneTools.annotation.state.removeAnnotation(annotationUID);
+    renderingEngineRef.current?.getViewports?.().forEach((viewport: any) => viewport.render?.());
+    refreshMeasurements();
+    return true;
+  }, [refreshMeasurements]);
+
+  const removeSelectedMeasurements = useCallback((): boolean => {
+    const selectedUIDs = new Set(
+      cornerstoneTools.annotation.selection.getAnnotationsSelected()
+        .filter(annotationUID => measurements.some(measurement => measurement.annotationUID === annotationUID))
+    );
+    // Include the React state as a fallback: selection events are dispatched
+    // synchronously by Cornerstone, but React may not have rendered the new
+    // selection yet when the keyboard event arrives.
+    measurements
+      .filter(measurement => measurement.selected)
+      .forEach(measurement => selectedUIDs.add(measurement.annotationUID));
+    if (!selectedUIDs.size) return false;
+    selectedUIDs.forEach(annotationUID => cornerstoneTools.annotation.state.removeAnnotation(annotationUID));
+    renderingEngineRef.current?.getViewports?.().forEach((viewport: any) => viewport.render?.());
+    refreshMeasurements();
+    return true;
+  }, [measurements, refreshMeasurements]);
+
+  useEffect(() => {
+    const removeOnDelete = (event: KeyboardEvent) => {
+      const target = event.target;
+      const isEditing = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement || (target instanceof HTMLElement && target.isContentEditable);
+      if (isEditing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      const isDeleteKey = event.key === 'Delete' || event.key === 'Supr' || event.key === 'Del' ||
+        event.key === 'Backspace' || event.code === 'Delete' || event.code === 'NumpadDecimal';
+      if (!isDeleteKey) return;
+      if (!removeSelectedMeasurements()) return;
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    window.addEventListener('keydown', removeOnDelete, true);
+    return () => window.removeEventListener('keydown', removeOnDelete, true);
+  }, [removeSelectedMeasurements]);
+
   return { state, registerViewportElement, applyProtocolLayout, loadSeries, selectViewport,
     setWindowLevel, resetView, invertColors, undoLastAnnotation, mouseToolBindings,
     setMouseToolBinding, shiftMouseToolBindings, setShiftMouseToolBinding, setImageIndex,
-    referenceLinesEnabled, setReferenceLinesEnabled };
+    referenceLinesEnabled, setReferenceLinesEnabled, measurements, selectMeasurement,
+    removeMeasurement, removeSelectedMeasurements, presentationStates, activePresentationStateUID,
+    applyPresentationState, savePresentationState };
 }

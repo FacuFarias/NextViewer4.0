@@ -8,6 +8,7 @@ export interface RuntimeConfig {
   oidcPostLogoutRedirectUri: string;
   shareGatewayRoot: string;
   downloadEnabled?: boolean;
+  presentationStateShareEnabled?: boolean;
 }
 
 declare global {

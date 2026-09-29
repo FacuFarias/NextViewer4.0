@@ -16,6 +16,7 @@ IA, segmentación, persistencia de anotaciones ni un servicio propio de informes
 - Window/level, pan, zoom, scroll, inversión, longitud, ángulo, bidireccional,
   ROI circular/rectangular y flecha.
 - Mediciones y caché de imágenes únicamente en memoria durante la sesión.
+- Presentation States GSPS por imagen/fotograma, guardados mediante STOW-RS sin modificar los píxeles originales.
 - Hanging protocols globales por modalidad y protocolos personales persistidos
   en NextRIS para el personal autenticado.
 
@@ -71,6 +72,10 @@ CRUD de protocolos. La migración requerida es
 `deployment/migrations/20260816_hanging_protocols.sql`. Las credenciales
 técnicas se configuran mediante `VIEWER_KEYCLOAK_*`; no están embebidas en el
 frontend ni en el backend.
+
+Los Presentation States se guardan únicamente para personal autenticado. La
+visualización desde enlaces compartidos permanece desactivada por defecto y
+puede habilitarse en el contenedor con `PRESENTATION_STATE_SHARE_ENABLED=true`.
 
 ## Despliegue y rollback
 

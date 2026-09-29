@@ -7,5 +7,6 @@ window.__NEXTVIEWER_CONFIG__ = {
   oidcRedirectUri: 'https://clinicacp.ddns.net:3000/callback',
   oidcPostLogoutRedirectUri: 'https://clinicacp.ddns.net:3000/',
   shareGatewayRoot: 'https://clinicacp.ddns.net:3001/api/general/share-dicom',
-  downloadEnabled: false
+  downloadEnabled: false,
+  presentationStateShareEnabled: false
 };

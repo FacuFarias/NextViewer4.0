@@ -16,6 +16,7 @@ import DownloadButton from './DownloadButton';
 import HangingProtocolsPanel from './HangingProtocolsPanel';
 import { IconMPR } from './Icons';
 import MPRView from './MPRView';
+import MeasurementsPanel from './MeasurementsPanel';
 import ResizeHandle from './ResizeHandle';
 import SeriesPanel, { PatientInfo, SERIES_DRAG_MIME } from './SeriesPanel';
 import Toolbar, { AnnotationToolbar } from './Toolbar';
@@ -30,12 +31,44 @@ interface LayoutSnapshot {
   layout: HangingProtocol['layout'];
   assignments: HangingAssignment[];
   activeProtocol: HangingProtocol | null;
+  columnRatios: number[];
+  rowRatios: number[];
 }
 
-function defaultHorizontalViewportRatios(layout: string): number[] {
-  if (layout === '1x2') return [1, 1];
-  if (layout === '1x3') return [1, 1, 1];
-  return [];
+interface LayoutDimensions {
+  rows: number;
+  columns: number;
+}
+
+interface ViewportGridPosition {
+  row: number;
+  column: number;
+}
+
+type DividerAxis = 'column' | 'row';
+
+function getLayoutDimensions(layout: string): LayoutDimensions {
+  if (layout === 'mpr') return { rows: 1, columns: 1 };
+  const [rows, columns] = layout.split('x').map(Number);
+  return {
+    rows: Number.isFinite(rows) && rows > 0 ? rows : 1,
+    columns: Number.isFinite(columns) && columns > 0 ? columns : 1,
+  };
+}
+
+function normalizeRatios(ratios: number[], count: number): number[] {
+  if (count <= 0) return [1];
+  return Array.from({ length: count }, (_, index) => {
+    const ratio = ratios[index];
+    return Number.isFinite(ratio) && ratio > 0 ? ratio : 1;
+  });
+}
+
+function buildTrackTemplate(ratios: number[]): string {
+  return ratios.flatMap((ratio, index) => [
+    `minmax(0, ${ratio}fr)`,
+    ...(index < ratios.length - 1 ? ['10px'] : []),
+  ]).join(' ');
 }
 
 export default function DicomViewer({ studyInstanceUID, shareAccess }: DicomViewerProps) {
@@ -44,6 +77,8 @@ export default function DicomViewer({ studyInstanceUID, shareAccess }: DicomView
     setWindowLevel, resetView, invertColors, mouseToolBindings, setMouseToolBinding,
     shiftMouseToolBindings, setShiftMouseToolBinding,
     setImageIndex, undoLastAnnotation, referenceLinesEnabled, setReferenceLinesEnabled,
+    measurements, selectMeasurement, removeMeasurement, presentationStates,
+    activePresentationStateUID, applyPresentationState, savePresentationState,
   } = useDicomViewer(studyInstanceUID);
   const [thumbnails, setThumbnails] = useState<Record<string, string>>({});
   const [priorStudies, setPriorStudies] = useState<DicomStudy[]>([]);
@@ -60,9 +95,11 @@ export default function DicomViewer({ studyInstanceUID, shareAccess }: DicomView
   const [layoutHistory, setLayoutHistory] = useState<LayoutSnapshot[]>([]);
   const [dragOverViewportId, setDragOverViewportId] = useState<string | null>(null);
   const [showOverlays, setShowOverlays] = useState(true);
-  const [horizontalViewportRatios, setHorizontalViewportRatios] = useState<number[]>(() => defaultHorizontalViewportRatios('1x1'));
+  const [viewportColumnRatios, setViewportColumnRatios] = useState<number[]>([1]);
+  const [viewportRowRatios, setViewportRowRatios] = useState<number[]>([1]);
   const [isMobileViewport, setIsMobileViewport] = useState(() => window.matchMedia(MOBILE_VIEWER_QUERY).matches);
   const appliedStudyRef = useRef('');
+  const viewportRatioStudyRef = useRef<string | undefined>(undefined);
   const horizontalViewportGridRef = useRef<HTMLDivElement | null>(null);
   const config = getConfig();
   const canEditProtocols = !shareAccess && hasPersonalizationAccess();
@@ -91,7 +128,16 @@ export default function DicomViewer({ studyInstanceUID, shareAccess }: DicomView
     !mprActive && resolveViewerModality(activeSeries?.modality, state.currentStudy?.modality) === 'mr' &&
     referenceLineViewports.length > 1
   );
-  const isHorizontalResizableLayout = !isMobileViewport && (state.layoutMode === '1x2' || state.layoutMode === '1x3');
+  const { rows: layoutRows, columns: layoutColumns } = getLayoutDimensions(state.layoutMode);
+  const isResizableLayout = !isMobileViewport && (layoutRows > 1 || layoutColumns > 1);
+  const activeColumnRatios = normalizeRatios(viewportColumnRatios, layoutColumns);
+  const activeRowRatios = normalizeRatios(viewportRowRatios, layoutRows);
+
+  const resetViewportRatios = useCallback((layout: string) => {
+    const { rows, columns } = getLayoutDimensions(layout);
+    setViewportColumnRatios(Array.from({ length: columns }, () => 1));
+    setViewportRowRatios(Array.from({ length: rows }, () => 1));
+  }, []);
 
   const preferredReferenceViewportId = useMemo(() => {
     const axialViewport = referenceLineViewports.find(viewport => {
@@ -108,46 +154,83 @@ export default function DicomViewer({ studyInstanceUID, shareAccess }: DicomView
   }, [activeViewport?.id, referenceLineViewports]);
 
   useEffect(() => {
-    setHorizontalViewportRatios(defaultHorizontalViewportRatios(state.layoutMode));
-  }, [state.layoutMode, state.currentStudy?.studyInstanceUID]);
+    const { rows, columns } = getLayoutDimensions(state.layoutMode);
+    const studyUID = state.currentStudy?.studyInstanceUID;
+    const isNewStudy = viewportRatioStudyRef.current !== studyUID;
+    viewportRatioStudyRef.current = studyUID;
+    if (isNewStudy) {
+      setViewportColumnRatios(Array.from({ length: columns }, () => 1));
+      setViewportRowRatios(Array.from({ length: rows }, () => 1));
+      return;
+    }
+    setViewportColumnRatios(previous => normalizeRatios(previous, columns));
+    setViewportRowRatios(previous => normalizeRatios(previous, rows));
+  }, [state.currentStudy?.studyInstanceUID, state.layoutMode]);
 
-  const handleHorizontalDividerPointerDown = useCallback((dividerIndex: number, event: React.PointerEvent<HTMLDivElement>) => {
-    if (!isHorizontalResizableLayout || horizontalViewportRatios.length < 2) return;
+  const handleDividerPointerDown = useCallback((axis: DividerAxis, dividerIndex: number, event: React.PointerEvent<HTMLDivElement>) => {
+    if (!isResizableLayout) return;
     const grid = horizontalViewportGridRef.current;
     if (!grid) return;
 
     event.preventDefault();
     event.currentTarget.setPointerCapture?.(event.pointerId);
-    const initialRatios = [...horizontalViewportRatios];
+    const isColumnDivider = axis === 'column';
+    const initialRatios = [...(isColumnDivider ? activeColumnRatios : activeRowRatios)];
+    if (initialRatios.length < 2 || dividerIndex >= initialRatios.length - 1) return;
     const totalWeight = initialRatios.reduce((sum, ratio) => sum + ratio, 0) || 1;
-    const dividerWidth = 10;
-    const availableWidth = Math.max(1, grid.clientWidth - 6 - (initialRatios.length - 1) * dividerWidth);
-    const minimumWeight = Math.min(totalWeight / initialRatios.length * 0.7, (150 / availableWidth) * totalWeight);
+    const availableSize = Math.max(1, (isColumnDivider ? grid.clientWidth : grid.clientHeight) - 6 - (initialRatios.length - 1) * 10);
+    const minimumWeight = Math.min(
+      totalWeight / initialRatios.length * 0.7,
+      (150 / availableSize) * totalWeight,
+    );
     const pairWeight = initialRatios[dividerIndex] + initialRatios[dividerIndex + 1];
-    const startX = event.clientX;
+    const startPosition = isColumnDivider ? event.clientX : event.clientY;
 
     const clamp = (value: number, minimum: number, maximum: number) => Math.min(maximum, Math.max(minimum, value));
     const handlePointerMove = (moveEvent: PointerEvent) => {
-      const deltaWeight = ((moveEvent.clientX - startX) / availableWidth) * totalWeight;
-      const leftWeight = clamp(initialRatios[dividerIndex] + deltaWeight, minimumWeight, pairWeight - minimumWeight);
+      const currentPosition = isColumnDivider ? moveEvent.clientX : moveEvent.clientY;
+      const deltaWeight = ((currentPosition - startPosition) / availableSize) * totalWeight;
+      const firstWeight = clamp(initialRatios[dividerIndex] + deltaWeight, minimumWeight, pairWeight - minimumWeight);
       const nextRatios = [...initialRatios];
-      nextRatios[dividerIndex] = leftWeight;
-      nextRatios[dividerIndex + 1] = pairWeight - leftWeight;
-      setHorizontalViewportRatios(nextRatios);
+      nextRatios[dividerIndex] = firstWeight;
+      nextRatios[dividerIndex + 1] = pairWeight - firstWeight;
+      if (isColumnDivider) setViewportColumnRatios(nextRatios);
+      else setViewportRowRatios(nextRatios);
     };
     const handlePointerUp = () => {
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
       window.dispatchEvent(new Event('resize'));
     };
 
-    document.body.style.cursor = 'col-resize';
+    document.body.style.cursor = isColumnDivider ? 'col-resize' : 'row-resize';
     document.body.style.userSelect = 'none';
     window.addEventListener('pointermove', handlePointerMove);
-    window.addEventListener('pointerup', handlePointerUp, { once: true });
-  }, [horizontalViewportRatios, isHorizontalResizableLayout]);
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
+  }, [activeColumnRatios, activeRowRatios, isResizableLayout]);
+
+  const handleDividerKeyDown = useCallback((axis: DividerAxis, dividerIndex: number, event: React.KeyboardEvent<HTMLDivElement>) => {
+    const isColumnDivider = axis === 'column';
+    const ratios = isColumnDivider ? activeColumnRatios : activeRowRatios;
+    const direction = isColumnDivider
+      ? (event.key === 'ArrowLeft' ? -1 : event.key === 'ArrowRight' ? 1 : 0)
+      : (event.key === 'ArrowUp' ? -1 : event.key === 'ArrowDown' ? 1 : 0);
+    if (!direction || dividerIndex >= ratios.length - 1) return;
+
+    event.preventDefault();
+    const pairWeight = ratios[dividerIndex] + ratios[dividerIndex + 1];
+    const minimumWeight = Math.min(pairWeight / 2 * 0.7, 0.1 * pairWeight);
+    const firstWeight = Math.min(pairWeight - minimumWeight, Math.max(minimumWeight, ratios[dividerIndex] + direction * pairWeight * 0.05));
+    const nextRatios = [...ratios];
+    nextRatios[dividerIndex] = firstWeight;
+    nextRatios[dividerIndex + 1] = pairWeight - firstWeight;
+    if (isColumnDivider) setViewportColumnRatios(nextRatios);
+    else setViewportRowRatios(nextRatios);
+  }, [activeColumnRatios, activeRowRatios]);
 
   const recordLayoutSnapshot = useCallback(() => {
     if (!state.viewports.length) return;
@@ -159,8 +242,10 @@ export default function DicomViewer({ studyInstanceUID, shareAccess }: DicomView
         series: viewport.series || undefined,
       })),
       activeProtocol,
+      columnRatios: [...viewportColumnRatios],
+      rowRatios: [...viewportRowRatios],
     }]);
-  }, [activeProtocol, state.layoutMode, state.viewports]);
+  }, [activeProtocol, state.layoutMode, state.viewports, viewportColumnRatios, viewportRowRatios]);
 
   useEffect(() => {
     let cancelled = false;
@@ -326,12 +411,14 @@ export default function DicomViewer({ studyInstanceUID, shareAccess }: DicomView
   const toggleMpr = useCallback(() => {
     if (!activeSeries || !config.mprEnabled || (!mprActive && !mprCapable)) return;
     recordLayoutSnapshot();
-    applyProtocolLayout(mprActive ? '1x1' : 'mpr', [{
+    const nextLayout = mprActive ? '1x1' : 'mpr';
+    resetViewportRatios(nextLayout);
+    applyProtocolLayout(nextLayout, [{
       slot: 0,
       label: 'Serie principal',
       series: activeSeries,
     }]);
-  }, [activeSeries, applyProtocolLayout, config.mprEnabled, mprActive, mprCapable, recordLayoutSnapshot]);
+  }, [activeSeries, applyProtocolLayout, config.mprEnabled, mprActive, mprCapable, recordLayoutSnapshot, resetViewportRatios]);
   const handleToolChange = useCallback((toolName: ClinicalMouseTool) => {
     setMouseToolBinding('primary', toolName);
   }, [setMouseToolBinding]);
@@ -339,6 +426,14 @@ export default function DicomViewer({ studyInstanceUID, shareAccess }: DicomView
     if (!referenceLinesAvailable) return;
     setReferenceLinesEnabled(!referenceLinesEnabled, preferredReferenceViewportId);
   }, [preferredReferenceViewportId, referenceLinesAvailable, referenceLinesEnabled, setReferenceLinesEnabled]);
+  const handlePresentationStateSave = useCallback(async () => {
+    if (shareAccess) return;
+    try {
+      await savePresentationState();
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : 'No se pudo guardar el PR.');
+    }
+  }, [savePresentationState, shareAccess]);
   const resizeLeft = useCallback((delta: number) => setLeftSidebarWidth(previous => Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, previous + delta))), []);
   const resizeRight = useCallback((delta: number) => setRightSidebarWidth(previous => Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, previous + delta))), []);
   const finishResize = useCallback(() => window.dispatchEvent(new Event('resize')), []);
@@ -346,8 +441,9 @@ export default function DicomViewer({ studyInstanceUID, shareAccess }: DicomView
   const handleProtocolApply = useCallback((protocol: HangingProtocol) => {
     if (!state.currentStudy || protocol.modality !== resolvePrimaryModality(state.currentStudy)) return;
     recordLayoutSnapshot();
+    resetViewportRatios(protocol.layout);
     applyProtocol(protocol, true);
-  }, [applyProtocol, recordLayoutSnapshot, state.currentStudy]);
+  }, [applyProtocol, recordLayoutSnapshot, resetViewportRatios, state.currentStudy]);
 
   const handleLayoutChange = useCallback((layout: GridLayout) => {
     if (!state.currentStudy || state.layoutMode === layout) return;
@@ -368,14 +464,17 @@ export default function DicomViewer({ studyInstanceUID, shareAccess }: DicomView
 
     recordLayoutSnapshot();
     setActiveProtocol(null);
+    resetViewportRatios(layout);
     applyProtocolLayout(layout, assignments);
-  }, [applyProtocolLayout, recordLayoutSnapshot, state.currentStudy, state.layoutMode, state.viewports]);
+  }, [applyProtocolLayout, recordLayoutSnapshot, resetViewportRatios, state.currentStudy, state.layoutMode, state.viewports]);
 
   const handleUndoLayout = useCallback(() => {
     if (!state.currentStudy || !layoutHistory.length) return;
     const snapshot = layoutHistory[layoutHistory.length - 1];
     setLayoutHistory(previous => previous.slice(0, -1));
     setActiveProtocol(snapshot.activeProtocol);
+    setViewportColumnRatios(snapshot.columnRatios);
+    setViewportRowRatios(snapshot.rowRatios);
     applyProtocolLayout(snapshot.layout, snapshot.assignments);
   }, [applyProtocolLayout, layoutHistory, state.currentStudy]);
 
@@ -422,7 +521,23 @@ export default function DicomViewer({ studyInstanceUID, shareAccess }: DicomView
     return () => window.removeEventListener('keydown', handleViewerShortcut);
   }, [changeActiveSeries]);
 
-  const renderStackViewport = (viewport: typeof activeViewport, flexRatio?: number) => {
+  useEffect(() => {
+    const handlePresentationStateShortcut = (event: KeyboardEvent) => {
+      const target = event.target;
+      const isEditing = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement || (target instanceof HTMLElement && target.isContentEditable);
+      const isSaveShortcut = event.code === 'KeyS' || event.key.toLowerCase() === 's';
+      if (isEditing || event.altKey || event.shiftKey || (!event.ctrlKey && !event.metaKey) || !isSaveShortcut) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      void handlePresentationStateSave();
+    };
+    document.addEventListener('keydown', handlePresentationStateShortcut, true);
+    return () => document.removeEventListener('keydown', handlePresentationStateShortcut, true);
+  }, [handlePresentationStateSave]);
+
+  const renderStackViewport = (viewport: typeof activeViewport, gridPosition?: ViewportGridPosition) => {
     if (!viewport) return null;
     const modality = resolveViewerModality(viewport.series?.modality, state.currentStudy?.modality, viewport.instance?.modality);
     const viewportStudyUID = viewport.series?.studyInstanceUID || state.currentStudy?.studyInstanceUID;
@@ -431,7 +546,10 @@ export default function DicomViewer({ studyInstanceUID, shareAccess }: DicomView
       <section
         key={viewport.id}
         className={`clinical-stack-panel viewer-modality-${modality} ${state.activeViewportId === viewport.id ? 'active' : ''} ${dragOverViewportId === viewport.id ? 'drag-over' : ''}`}
-        style={flexRatio === undefined ? undefined : { flex: `${flexRatio} 1 0%` }}
+        style={gridPosition ? {
+          gridColumn: gridPosition.column * 2 + 1,
+          gridRow: gridPosition.row * 2 + 1,
+        } : undefined}
         onMouseDown={() => selectViewport(viewport.id)}
         onContextMenu={event => event.preventDefault()}
         onDragOver={event => handleViewportDragOver(event, viewport.id)}
@@ -495,6 +613,10 @@ export default function DicomViewer({ studyInstanceUID, shareAccess }: DicomView
           <AnnotationToolbar
             activeTool={mouseToolBindings.primary}
             onToolChange={handleToolChange}
+            mouseToolBindings={mouseToolBindings}
+            onMouseToolChange={setMouseToolBinding}
+            shiftMouseToolBindings={shiftMouseToolBindings}
+            onShiftMouseToolChange={setShiftMouseToolBinding}
             onUndo={handleUndo}
             onReferenceLinesToggle={referenceLinesAvailable ? handleReferenceLinesToggle : undefined}
             referenceLinesEnabled={referenceLinesEnabled}
@@ -566,24 +688,44 @@ export default function DicomViewer({ studyInstanceUID, shareAccess }: DicomView
             </div>
           ) : <div
             ref={horizontalViewportGridRef}
-            className={`clinical-viewport-grid layout-${state.layoutMode}${isHorizontalResizableLayout ? ' clinical-horizontal-resizable' : ''}`}
+            className={`clinical-viewport-grid layout-${state.layoutMode}${isResizableLayout ? ' clinical-resizable' : ''}`}
+            style={isResizableLayout ? {
+              '--viewport-grid-columns': buildTrackTemplate(activeColumnRatios),
+              '--viewport-grid-rows': buildTrackTemplate(activeRowRatios),
+            } as React.CSSProperties : undefined}
           >
-            {isHorizontalResizableLayout
-              ? state.viewports.map((viewport, index) => (
-                <React.Fragment key={viewport.id}>
-                  {renderStackViewport(viewport, horizontalViewportRatios[index] || 1)}
-                  {index < state.viewports.length - 1 && (
-                    <div
-                      className="viewport-divider"
-                      role="separator"
-                      tabIndex={0}
-                      aria-label={`Redimensionar entre viewport ${index + 1} y ${index + 2}`}
-                      onPointerDown={event => handleHorizontalDividerPointerDown(index, event)}
-                    />
-                  )}
-                </React.Fragment>
-              ))
-              : state.viewports.map(viewport => renderStackViewport(viewport))}
+            {isResizableLayout ? <>
+              {state.viewports.map((viewport, index) => renderStackViewport(viewport, {
+                row: Math.floor(index / layoutColumns),
+                column: index % layoutColumns,
+              }))}
+              {Array.from({ length: layoutColumns - 1 }, (_, index) => (
+                <div
+                  key={`column-divider-${index}`}
+                  className="viewport-divider viewport-divider-vertical"
+                  style={{ gridColumn: index * 2 + 2, gridRow: '1 / -1' }}
+                  role="separator"
+                  tabIndex={0}
+                  aria-orientation="vertical"
+                  aria-label={`Redimensionar entre columna ${index + 1} y ${index + 2}`}
+                  onPointerDown={event => handleDividerPointerDown('column', index, event)}
+                  onKeyDown={event => handleDividerKeyDown('column', index, event)}
+                />
+              ))}
+              {Array.from({ length: layoutRows - 1 }, (_, index) => (
+                <div
+                  key={`row-divider-${index}`}
+                  className="viewport-divider viewport-divider-horizontal"
+                  style={{ gridColumn: '1 / -1', gridRow: index * 2 + 2 }}
+                  role="separator"
+                  tabIndex={0}
+                  aria-orientation="horizontal"
+                  aria-label={`Redimensionar entre fila ${index + 1} y ${index + 2}`}
+                  onPointerDown={event => handleDividerPointerDown('row', index, event)}
+                  onKeyDown={event => handleDividerKeyDown('row', index, event)}
+                />
+              ))}
+            </> : state.viewports.map(viewport => renderStackViewport(viewport))}
           </div>}
         </main>
         {isToolsSidebarOpen && <ResizeHandle direction="left" onResize={resizeRight} onResizeEnd={finishResize} />}
@@ -598,6 +740,18 @@ export default function DicomViewer({ studyInstanceUID, shareAccess }: DicomView
           >
             <div className="mobile-drawer-header"><strong>Información y herramientas</strong><button type="button" onClick={() => setIsToolsSidebarOpen(false)} aria-label="Cerrar">×</button></div>
             {state.currentStudy && <section className="mobile-secondary-content"><h4>Datos del paciente</h4><PatientInfo study={state.currentStudy} className="mobile-patient-info" includeClinicalDetails /></section>}
+            {state.isLoaded && <MeasurementsPanel
+              measurements={measurements}
+              currentImageIndex={activeViewport?.imageIndex ?? -1}
+              onMeasurementSelect={selectMeasurement}
+              onMeasurementRemove={removeMeasurement}
+              presentationStates={presentationStates}
+              activeSopInstanceUID={activeViewport?.instance?.sopInstanceUID}
+              activeFrameNumber={activeViewport?.instance?.frameNumber}
+              activePresentationStateUID={activePresentationStateUID}
+              onPresentationStateApply={stateToApply => applyPresentationState(stateToApply)}
+              onPresentationStateSave={!shareAccess ? handlePresentationStateSave : undefined}
+            />}
             {activeViewport?.instance && <section className="mobile-secondary-content mobile-image-details"><h4>Imagen activa</h4><div className="mobile-technical-info"><div><span>Tamaño:</span><strong>{activeViewport.instance.rows}×{activeViewport.instance.columns}</strong></div><div><span>Bits:</span><strong>{activeViewport.instance.bitsAllocated}</strong></div>{activeViewport.instance.photometricInterpretation && <div><span>Fotometría:</span><strong>{activeViewport.instance.photometricInterpretation}</strong></div>}</div></section>}
             {!shareAccess && <section className="hanging-tools-section"><h4>Presentación</h4><button type="button" className="hanging-open-btn" onClick={() => { setIsToolsSidebarOpen(false); setIsHangingPanelOpen(true); }}>Hanging protocols<small>{activeProtocol ? `${activeProtocol.modality} · ${activeProtocol.layout.toUpperCase()}` : `Manual · ${state.layoutMode.toUpperCase()}`}</small></button></section>}
             {state.isLoaded && <><Toolbar

@@ -23,7 +23,9 @@ ENV DICOMWEB_ROOT=/dcm4chee-arc/aets/DCM4CHEE/rs \
     TOKEN_HANDOFF_CLIENT_IDS=dcm4chee-arc-ui,ohif-viewer \
     OIDC_REDIRECT_URI=https://clinicacp.ddns.net:3000/callback \
     OIDC_POST_LOGOUT_REDIRECT_URI=https://clinicacp.ddns.net:3000/ \
-    SHARE_GATEWAY_ROOT=https://clinicacp.ddns.net:3001/api/general/share-dicom
+    SHARE_GATEWAY_ROOT=https://clinicacp.ddns.net:3001/api/general/share-dicom \
+    DOWNLOAD_ENABLED=false \
+    PRESENTATION_STATE_SHARE_ENABLED=false
 
 EXPOSE 80
 

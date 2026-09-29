@@ -195,6 +195,73 @@ const MOUSE_BUTTONS: Array<{ value: ConfigurableMouseButton; label: string }> = 
   { value: 'secondary', label: 'Clic derecho' },
 ];
 
+const MouseToolSelector: React.FC<{
+  button: ConfigurableMouseButton;
+  toolName: ClinicalMouseTool;
+  options: ClinicalToolOption[];
+  onChange: (button: ConfigurableMouseButton, toolName: ClinicalMouseTool) => void;
+}> = ({ button, toolName, options, onChange }) => {
+  const [open, setOpen] = useState(false);
+  const selectorRef = useRef<HTMLDivElement>(null);
+  const currentTool = options.find(tool => tool.name === toolName) || NAVIGATION_TOOLS[0];
+  const buttonLabel = MOUSE_BUTTONS.find(item => item.value === button)?.label || 'Botón del mouse';
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      if (event.target instanceof Node && !selectorRef.current?.contains(event.target)) setOpen(false);
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    window.addEventListener('mousedown', closeOnOutsideClick);
+    return () => {
+      window.removeEventListener('keydown', closeOnEscape);
+      window.removeEventListener('mousedown', closeOnOutsideClick);
+    };
+  }, [open]);
+
+  return (
+    <div ref={selectorRef} className={`mouse-tool-selector${open ? ' open' : ''}`}>
+      <button
+        type="button"
+        className="mouse-tool-trigger"
+        onClick={() => setOpen(previous => !previous)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title={`${buttonLabel}: ${currentTool.title}`}
+      >
+        <IconMouseButton className="mouse-binding-icon" button={button} />
+        <span className="mouse-tool-current-name">{currentTool.shortTitle}</span>
+        <span className="mouse-tool-chevron" aria-hidden="true">⌄</span>
+      </button>
+      {open && <div className="mouse-tool-menu" role="menu" aria-label={`Herramienta para ${buttonLabel.toLowerCase()}`}>
+        <strong>{buttonLabel}</strong>
+        <div className="mouse-tool-options">
+          {options.map(({ name, Icon, title, shortTitle }) => (
+            <button
+              key={name}
+              type="button"
+              className={`mouse-tool-option${name === toolName ? ' active' : ''}`}
+              role="menuitemradio"
+              aria-checked={name === toolName}
+              onClick={() => {
+                onChange(button, name);
+                setOpen(false);
+              }}
+              title={title}
+            >
+              <Icon className="annotation-icon" />
+              <span>{shortTitle}</span>
+            </button>
+          ))}
+        </div>
+      </div>}
+    </div>
+  );
+};
+
 const MeasurementSelector: React.FC<{
   activeTool: ClinicalMouseTool;
   onToolChange?: (toolName: ClinicalMouseTool) => void;
@@ -286,19 +353,59 @@ export const AnnotationToolbar: React.FC<{
   onLayoutChange?: (layout: GridLayout) => void;
   toolsSidebarOpen?: boolean;
   onToolsToggle?: () => void;
+  mouseToolBindings?: MouseToolBindings;
+  onMouseToolChange?: (button: ConfigurableMouseButton, toolName: ClinicalMouseTool) => void;
+  shiftMouseToolBindings?: MouseToolBindings;
+  onShiftMouseToolChange?: (button: ConfigurableMouseButton, toolName: ClinicalMouseTool) => void;
   mobile?: boolean;
 }> = ({
   activeTool = 'WindowLevel', onToolChange, onResetView, onInvertColors, onUndo,
   onReferenceLinesToggle, referenceLinesEnabled = false,
   layout, onLayoutChange, toolsSidebarOpen = false, onToolsToggle,
+  mouseToolBindings, onMouseToolChange,
+  shiftMouseToolBindings, onShiftMouseToolChange,
   mobile = false,
 }) => {
   const config = getConfig();
   const availableTools = availableToolOptions(config.annotationsEnabled);
+  const [shiftPressed, setShiftPressed] = useState(false);
+
+  useEffect(() => {
+    if (mobile) return undefined;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Shift') setShiftPressed(true);
+    };
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.key === 'Shift') setShiftPressed(false);
+    };
+    const clearShift = () => setShiftPressed(false);
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('blur', clearShift);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('blur', clearShift);
+    };
+  }, [mobile]);
+
+  const showingShiftBindings = shiftPressed && Boolean(shiftMouseToolBindings && onShiftMouseToolChange);
+  const visibleMouseToolBindings = showingShiftBindings ? shiftMouseToolBindings! : mouseToolBindings;
+  const visibleMouseToolChange = showingShiftBindings ? onShiftMouseToolChange! : onMouseToolChange;
 
   return (
-    <div className={`annotation-toolbar${mobile ? ' annotation-toolbar-mobile' : ''}`} aria-label="Herramientas del visor">
-      {!mobile ? <>
+    <div className={`annotation-toolbar${mobile ? ' annotation-toolbar-mobile' : ''}${showingShiftBindings ? ' shift-bindings-active' : ''}`} aria-label="Herramientas del visor">
+      {!mobile && visibleMouseToolBindings && visibleMouseToolChange ? (
+        <div className="toolbar-group mouse-tool-bindings-group" role="group" aria-label="Configuración de botones del mouse">
+          {MOUSE_BUTTONS.map(({ value }) => <MouseToolSelector
+            key={value}
+            button={value}
+            toolName={visibleMouseToolBindings[value]}
+            options={availableTools}
+            onChange={visibleMouseToolChange}
+          />)}
+        </div>
+      ) : !mobile ? <>
         <div className="toolbar-group toolbar-mode-group" role="group" aria-label="Herramienta principal">
           {PRIMARY_TOOLS.map(({ name, Icon, title, shortTitle }) => (
             <button

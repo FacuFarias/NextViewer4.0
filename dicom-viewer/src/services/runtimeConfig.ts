@@ -18,3 +18,7 @@ export function getRuntimeConfig(): RuntimeConfig {
   }
   return config as RuntimeConfig;
 }
+
+export function isPresentationStateShareEnabled(): boolean {
+  return window.__NEXTVIEWER_CONFIG__?.presentationStateShareEnabled === true;
+}

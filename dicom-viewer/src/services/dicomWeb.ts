@@ -4,6 +4,8 @@ import { getDicomRequestHeaders } from './auth';
 import { getRuntimeConfig } from './runtimeConfig';
 import { isSupportedVisualInstance } from './viewerModality';
 import { resolveDicomWebConfig } from './dicomSource';
+import { parsePresentationState } from './presentationState';
+import type { PresentationState } from '../types/presentationState';
 
 function value(item: Record<string, any>, tag: string): any {
   return item[tag]?.Value?.[0];
@@ -102,6 +104,48 @@ export default class DicomWebService {
     });
     if (!response.ok) throw new Error(`DICOMweb respondió ${response.status} ${response.statusText}`);
     return response.arrayBuffer();
+  }
+
+  async getPresentationStates(studyInstanceUID: string): Promise<PresentationState[]> {
+    const seriesParams = new URLSearchParams({ Modality: 'PR', limit: '200' });
+    const seriesData = await this.fetchJson<Record<string, any>[]>(
+      `${this.config.baseUrl}/studies/${encodeURIComponent(studyInstanceUID)}/series?${seriesParams}`
+    );
+    const states: PresentationState[] = [];
+    for (const series of seriesData) {
+      const seriesUID = value(series, '0020000E');
+      if (!seriesUID) continue;
+      const instances = await this.fetchJson<Record<string, any>[]>(
+        `${this.config.baseUrl}/studies/${encodeURIComponent(studyInstanceUID)}/series/${encodeURIComponent(seriesUID)}/instances?includefield=00080016&includefield=00080018&includefield=00080033&includefield=00080023&includefield=00081115`
+      );
+      for (const item of instances) {
+        const sopUID = value(item, '00080018');
+        if (!sopUID) continue;
+        try {
+          const buffer = await this.fetchDicom(
+            `${this.config.baseUrl}/studies/${encodeURIComponent(studyInstanceUID)}/series/${encodeURIComponent(seriesUID)}/instances/${encodeURIComponent(sopUID)}`
+          );
+          const state = parsePresentationState(buffer);
+          state.blob = new Blob([buffer], { type: 'application/dicom' });
+          states.push(state);
+        } catch {
+          // Ignore malformed PR instances and keep the remaining study usable.
+        }
+      }
+    }
+    return states.sort((left, right) => `${right.creationDate}${right.creationTime}`.localeCompare(`${left.creationDate}${left.creationTime}`));
+  }
+
+  async storePresentationState(studyInstanceUID: string, blob: Blob): Promise<void> {
+    const boundary = `NextViewer-${crypto.randomUUID()}`;
+    const prefix = `--${boundary}\r\nContent-Type: application/dicom\r\nContent-Length: ${blob.size}\r\n\r\n`;
+    const suffix = `\r\n--${boundary}--\r\n`;
+    const body = new Blob([prefix, blob, suffix], { type: `multipart/related; type="application/dicom"; boundary=${boundary}` });
+    const response = await fetch(`${this.config.baseUrl}/studies/${encodeURIComponent(studyInstanceUID)}`, {
+      method: 'POST', body, cache: 'no-store',
+      headers: { ...(await this.getRequestHeaders('application/dicom+json')), 'Content-Type': `multipart/related; type="application/dicom"; boundary=${boundary}` },
+    });
+    if (!response.ok) throw new Error(`No se pudo guardar el Presentation State (${response.status}).`);
   }
 
   async searchStudies(queryParams: Record<string, string> = {}): Promise<DicomStudy[]> {
